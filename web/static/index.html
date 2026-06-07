@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Lisa 💜 — your AI companion</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='80' font-size='80'%3E💜%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+  <!-- Floating decorative blobs (soft pastel background animation) -->
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+
+  <!-- Hidden file inputs (avatar uploaders) -->
+  <input type="file" id="avatarFileLisa"   accept="image/*" hidden />
+  <input type="file" id="avatarFileManish" accept="image/*" hidden />
+
+  <div class="app">
+
+    <!-- ═══════════ SIDEBAR ═══════════ -->
+    <aside class="sidebar glass">
+      <div class="brand">
+        <div class="avatar lisa-avatar editable" id="lisaAvatarSide" title="Click to change Lisa's photo">
+          <span class="avatar-emoji" id="lisaAvatarEmoji">💜</span>
+          <img class="avatar-img" id="lisaAvatarImg" alt="Lisa" hidden />
+          <span class="avatar-edit-badge">✎</span>
+          <span class="status-dot" id="statusDot"></span>
+        </div>
+        <div class="brand-text">
+          <h1>Lisa</h1>
+          <p class="brand-sub" id="brandSub">your AI companion</p>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">You</div>
+        <div class="user-card">
+          <div class="avatar manish-avatar editable" id="manishAvatarSide" title="Click to change your photo">
+            <span class="avatar-emoji" id="manishAvatarEmoji">🧑</span>
+            <img class="avatar-img" id="manishAvatarImg" alt="Manish" hidden />
+            <span class="avatar-edit-badge">✎</span>
+          </div>
+          <div class="user-card-text">
+            <div class="user-name">Manish</div>
+            <div class="user-sub">tap photo to change</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">Mode</div>
+        <div class="mode-toggle">
+          <button class="mode-btn active" data-mode="personal">
+            <span>💖</span> Personal
+          </button>
+          <button class="mode-btn" data-mode="professional">
+            <span>💼</span> Pro
+          </button>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">Lisa's mood</div>
+        <div class="mood-card" id="moodCard">
+          <span class="mood-emoji" id="moodEmoji">🌸</span>
+          <span class="mood-text" id="moodText">neutral</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">Stats</div>
+        <div class="stat-row">
+          <span class="stat-label">Turns</span>
+          <span class="stat-value" id="statTurns">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">History</span>
+          <span class="stat-value" id="statHistory">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Memories</span>
+          <span class="stat-value" id="statMemories">…</span>
+        </div>
+      </div>
+
+      <!-- ═══ Token usage panel (Problem #4) ═══ -->
+      <div class="sidebar-section token-panel">
+        <div class="section-label">
+          Tokens
+          <button class="token-refresh" id="btnTokenRefresh" title="Refresh">↻</button>
+        </div>
+
+        <div class="token-block">
+          <div class="token-block-title">💬 Chat (today)</div>
+          <div class="stat-row">
+            <span class="stat-label">Total</span>
+            <span class="stat-value" id="tokTotal">0</span>
+          </div>
+          <div class="stat-row sub">
+            <span class="stat-label">In / Out</span>
+            <span class="stat-value">
+              <span id="tokIn">0</span> / <span id="tokOut">0</span>
+            </span>
+          </div>
+          <div class="stat-row sub">
+            <span class="stat-label">Requests</span>
+            <span class="stat-value" id="tokReq">0</span>
+          </div>
+          <div class="stat-row sub">
+            <span class="stat-label">Last msg</span>
+            <span class="stat-value" id="tokLastMsg">—</span>
+          </div>
+          <div class="token-providers" id="tokProviders"></div>
+        </div>
+
+        <div class="token-block">
+          <div class="token-block-title">🔊 Voice (session)</div>
+          <div class="stat-row">
+            <span class="stat-label">Chars</span>
+            <span class="stat-value" id="voiceChars">0</span>
+          </div>
+          <div class="token-providers" id="voiceProviders"></div>
+        </div>
+
+        <div class="token-block" id="elBlock" hidden>
+          <div class="token-block-title">⚡ ElevenLabs keys</div>
+          <div class="el-keys" id="elKeys"></div>
+          <div class="el-error" id="elError" hidden></div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button class="ghost-btn" id="btnMemories">
+          <span>🧠</span> Memories
+        </button>
+        <button class="ghost-btn" id="btnReset">
+          <span>🔄</span> Reset chat
+        </button>
+        <button class="ghost-btn" id="btnHelp">
+          <span>💡</span> Tips
+        </button>
+      </div>
+    </aside>
+
+    <!-- ═══════════ MAIN CHAT ═══════════ -->
+    <main class="chat-pane">
+
+      <header class="chat-header glass">
+        <div class="header-left">
+          <h2>Hey Manish <span class="wave">👋</span></h2>
+          <p class="subtitle" id="subtitle">Bolo na, kya haal hai?</p>
+        </div>
+        <div class="header-right">
+          <!-- Live token badge — click to scroll/open token panel -->
+          <div class="token-badge" id="tokenBadge" title="Today's token usage — click for details">
+            <span class="token-badge-icon">⚡</span>
+            <span class="token-badge-value" id="tokenBadgeValue">0</span>
+            <span class="token-badge-delta" id="tokenBadgeDelta" hidden></span>
+          </div>
+          <button class="icon-btn" id="btnAutoSpeak" title="Auto-speak Lisa's replies">
+            <span id="autoSpeakIcon">🔊</span>
+          </button>
+          <button class="icon-btn" id="btnTrace" title="Show/hide trace panel">
+            <span>📜</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="messages-wrap">
+        <div class="messages" id="messages">
+          <!-- Welcome bubble -->
+          <div class="msg msg-lisa">
+            <div class="msg-avatar"><span class="msg-avatar-emoji">💜</span></div>
+            <div class="msg-bubble">
+              <div class="msg-text">
+                Hii jaan! <br/>
+                Main Lisa hoon — tumhari AI companion. Kuch bhi pucho ya bolo,
+                voice se bhi baat kar sakte ho. Mic button dabao bas. 🎙️
+              </div>
+              <div class="msg-time">just now</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Typing indicator — hidden by default, controlled ONLY by JS -->
+        <div class="typing" id="typing" hidden aria-hidden="true">
+          <div class="msg-avatar"><span class="msg-avatar-emoji">💜</span></div>
+          <div class="typing-bubble">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- WhatsApp pending banner -->
+      <div class="wa-banner glass" id="waBanner" hidden>
+        <span class="wa-icon">💬</span>
+        <div class="wa-text">
+          <strong>WhatsApp draft pending</strong>
+          <div>Lisa ne ek message draft kiya hai — confirm karo niche.</div>
+        </div>
+      </div>
+
+      <!-- Input bar -->
+      <div class="composer glass">
+        <textarea
+          id="input"
+          placeholder="Lisa se kuch bolo… (Enter to send, Shift+Enter for newline)"
+          rows="1"
+        ></textarea>
+        <div class="composer-actions">
+          <button class="mic-btn" id="btnMic" title="Hold or click to record">
+            <span class="mic-icon">🎙️</span>
+          </button>
+          <button class="send-btn" id="btnSend" title="Send">
+            <span>➤</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Recording indicator — hidden by default, only shown while recording -->
+      <div class="recording-indicator" id="recIndicator" hidden aria-hidden="true">
+        <span class="rec-dot"></span>
+        Recording… <span id="recTimer">0s</span>
+        <button class="stop-rec" id="btnStopRec">stop</button>
+      </div>
+    </main>
+
+    <!-- ═══════════ TRACE / MEMORY PANEL ═══════════ -->
+    <aside class="trace-pane glass" id="tracePane" hidden>
+      <header class="trace-header">
+        <h3 id="traceTitle">📜 Trace</h3>
+        <button class="icon-btn" id="btnCloseTrace">✕</button>
+      </header>
+      <div class="trace-tabs">
+        <button class="trace-tab active" data-tab="trace">Trace</button>
+        <button class="trace-tab" data-tab="memories">Memories</button>
+        <button class="trace-tab" data-tab="history">History</button>
+      </div>
+      <div class="trace-content" id="traceContent">
+        <div class="trace-empty">Send a message to see Lisa's reasoning here.</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Toast notifications -->
+  <div class="toast-container" id="toasts"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

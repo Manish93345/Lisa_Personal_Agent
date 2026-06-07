@@ -1,0 +1,35 @@
+sentence-transformers
+yt-dlp
+cerebras-cloud-sdk
+openai-whisper
+edge-tts
+sounddevice
+soundfile
+pyaudio
+pipwin
+kokoro-onnx
+huggingface_hub
+gTTS
+pygame
+pyvda
+pyautogui
+pywin32
+google-cloud-texttospeech
+rapidfuzz
+python-dotenv
+chromadb
+google-genai
+groq
+selenium
+webdriver-manager
+pyperclip
+pycaw
+indic-transliteration
+
+# Web UI
+fastapi
+uvicorn[standard]
+python-multipart
+
+# HTTP
+requests

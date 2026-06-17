@@ -54,7 +54,7 @@ import pygame
 # ── Config ──────────────────────────────────────────────────────────────
 # Sarvam
 SARVAM_API_KEY   = os.getenv("SARVAM_API_KEY", "")
-SARVAM_VOICE     = os.getenv("SARVAM_VOICE", "shreya")
+SARVAM_VOICE     = os.getenv("SARVAM_VOICE", "anushka")
 SARVAM_MODEL     = os.getenv("SARVAM_MODEL", "bulbul:v3")
 SARVAM_PACE      = float(os.getenv("SARVAM_PACE", "0.95"))
 
@@ -301,13 +301,91 @@ def _elevenlabs_tts(text: str) -> bool:
 #  Provider 2: SARVAM BULBUL V3
 # ════════════════════════════════════════════════════════════════════════
 
+def _roman_to_devanagari(text: str) -> str:
+    """
+    Convert Roman Hinglish to Devanagari using ai4bharat-transliteration.
+    WHY: Sarvam hi-IN voice reads Roman text with English phonics:
+         "main" → "mayn" | "theek" → "thee-k" | "hoon" → wrong pitch
+    AFTER: "मैं ठीक हूँ jaan" → Sarvam pronounces Hindi words perfectly.
+
+    English words (baby, Aww, ok, jaan) are kept in Roman — the library
+    only converts words that are clearly Hindi.
+
+    First call downloads the model (~80MB). Subsequent calls are instant (~5ms).
+    Fallback: returns original text if library not installed.
+    """
+    try:
+        from ai4bharat.transliteration import XlitEngine
+        # Lazy-init: keep engine in module cache to avoid reload every call
+        if not hasattr(_roman_to_devanagari, "_engine"):
+            _roman_to_devanagari._engine = XlitEngine("hi", beam_width=10, rescore=True)
+        out = _roman_to_devanagari._engine.translit_sentence(text, lang_code="hi")
+        result = out if isinstance(out, str) else out.get("hi", text)
+        # Validate — if result is empty or too short, fall back
+        return result if len(result) > 2 else text
+    except ImportError:
+        # ai4bharat not installed — try Sarvam transliterate API instead
+        return _sarvam_api_transliterate(text)
+    except Exception as e:
+        print(f"  [Transliterate] {e}")
+        return text
+
+
+def _sarvam_api_transliterate(text: str) -> str:
+    """
+    Fallback: Sarvam Transliterate API (same key, cloud-based).
+    Used when ai4bharat library is not installed.
+    Confirmed API format from Sarvam docs.
+    """
+    import requests
+    try:
+        r = requests.post(
+            "https://api.sarvam.ai/transliterate",
+            headers={
+                "api-subscription-key": SARVAM_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "input":                text[:950],   # 1000 char API limit
+                "source_language_code": "en-IN",      # Roman Hinglish input
+                "target_language_code": "hi-IN",      # Devanagari output
+                "numerals_format":      "international",
+            },
+            timeout=6,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            result = data.get("output") or data.get("transliterated_text") or ""
+            return result if len(result) > 2 else text
+        print(f"  [Sarvam/Transliterate] HTTP {r.status_code}")
+    except Exception as e:
+        print(f"  [Sarvam/Transliterate] {e}")
+    return text
+
+
 def _sarvam_tts(text: str) -> bool:
-    """Sarvam Bulbul V3 — best Hinglish female voice. NO emotion support."""
+    """
+    Sarvam Bulbul V3 — best Hinglish TTS on free tier.
+
+    Pipeline (critical for pronunciation):
+      1. Roman Hinglish → Devanagari via ai4bharat transliteration
+         "main theek hoon" → "मैं ठीक हूँ"
+      2. Devanagari text → Sarvam Bulbul V3 TTS
+         Sarvam reads Devanagari perfectly with natural Hindi prosody.
+
+    Without step 1, Sarvam reads Roman text with English phonics → terrible.
+
+    Voice: anushka (warm, conversational Indian female, original tested choice)
+    Temperature 0.85 = noticeably more expressive than default 0.6
+    """
     if not SARVAM_API_KEY:
         return False
     try:
         import requests
         import base64
+
+        # Step 1: Convert Roman Hinglish → Devanagari (fixes pronunciation)
+        devanagari_text = _roman_to_devanagari(text)
 
         url = "https://api.sarvam.ai/text-to-speech"
         headers = {
@@ -315,7 +393,7 @@ def _sarvam_tts(text: str) -> bool:
             "Content-Type": "application/json",
         }
         payload = {
-            "inputs":              [text[:1500]],
+            "inputs":               [devanagari_text[:2500]],
             "target_language_code": "hi-IN",
             "speaker":              SARVAM_VOICE,
             "model":                SARVAM_MODEL,
@@ -323,11 +401,17 @@ def _sarvam_tts(text: str) -> bool:
             "speech_sample_rate":   22050,
             "enable_preprocessing": True,
         }
-        if SARVAM_MODEL.startswith("bulbul:v2") or SARVAM_MODEL == "bulbul:v1":
+
+        # v3-only: temperature controls expressiveness (0.01-2.0, default 0.6)
+        if SARVAM_MODEL == "bulbul:v3":
+            payload["temperature"] = float(os.getenv("SARVAM_TEMPERATURE", "0.85"))
+
+        # v2/v1-only parameters
+        elif SARVAM_MODEL.startswith("bulbul:v2") or SARVAM_MODEL == "bulbul:v1":
             payload["pitch"]    = float(os.getenv("SARVAM_PITCH",    "0.0"))
             payload["loudness"] = float(os.getenv("SARVAM_LOUDNESS", "1.0"))
 
-        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
         if r.status_code != 200:
             try:
                 err = r.json()
@@ -375,22 +459,53 @@ def _romanize_to_devanagari(text: str) -> str:
 
 
 def _edge_tts(text: str) -> bool:
+    """
+    edge-tts with asyncio fix for FastAPI context.
+    FastAPI/uvicorn already has a running event loop — asyncio.run() fails inside it.
+    Fix: create a NEW event loop in a dedicated thread.
+    """
+    import threading
     try:
         import edge_tts
+
         deva_chars  = len(re.findall(r'[\u0900-\u097F]', text))
         total_chars = max(1, len(re.sub(r'\s+', '', text)))
         deva_ratio  = deva_chars / total_chars
-        speak_text = text if deva_ratio > 0.30 else _romanize_to_devanagari(text)
+        speak_text  = text if deva_ratio > 0.30 else _romanize_to_devanagari(text)
 
-        async def _run():
-            communicate = edge_tts.Communicate(
-                text=speak_text, voice=EDGE_VOICE, rate="+0%", pitch="+0Hz",
-            )
-            await communicate.save(TEMP_MP3)
+        result = {"success": False, "error": None}
 
-        asyncio.run(_run())
+        def _run_in_thread():
+            """Dedicated thread with its own event loop — never conflicts."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def _generate():
+                    communicate = edge_tts.Communicate(
+                        text=speak_text, voice=EDGE_VOICE,
+                        rate="+0%", pitch="+0Hz",
+                    )
+                    await communicate.save(TEMP_MP3)
+
+                loop.run_until_complete(_generate())
+                result["success"] = True
+            except Exception as e:
+                result["error"] = e
+            finally:
+                loop.close()
+
+        t = threading.Thread(target=_run_in_thread, daemon=True)
+        t.start()
+        t.join(timeout=30)   # 30s timeout (generous for slow connections)
+
+        if not result["success"]:
+            if result["error"]:
+                print(f"  [edge-tts] {result['error']}")
+            return False
+
         _play_file(TEMP_MP3)
         return True
+
     except Exception as e:
         print(f"  [edge-tts] {e}")
         return False

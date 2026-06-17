@@ -33,3 +33,5 @@ python-multipart
 
 # HTTP
 requests
+pip install sentence-transformers
+pip install ai4bharat-transliteration

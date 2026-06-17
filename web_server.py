@@ -134,6 +134,21 @@ async def lifespan(app: FastAPI):
     print(f"   {AGENT_NAME.upper()} — Web UI server starting")
     print(f"   Open in browser: http://{WEB_HOST}:{WEB_PORT}")
     print("═" * 60 + "\n")
+
+    # Preload sentence-transformers model in background thread at startup.
+    # Without this, the FIRST RAG call loads the model (44-69 seconds of silence).
+    # With this, model loads during startup while the banner is showing.
+    def _preload_embedder():
+        try:
+            from memory.rag_memory import _get_local_model
+            _get_local_model()
+            print("  [RAG] Local embedding model ready.\n")
+        except Exception as e:
+            print(f"  [RAG] Preload skipped: {e}\n")
+
+    import threading
+    threading.Thread(target=_preload_embedder, daemon=True).start()
+
     yield
     try:
         from actions.whatsapp_actions import close_driver

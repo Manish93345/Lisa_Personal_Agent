@@ -58,8 +58,8 @@ from config.settings import (
     AGENT_NAME, USER_NAME, RAG_TOP_K,
 )
 from config.prompts import (
-    get_personal_prompt, get_professional_prompt,
-    detect_mood, MODE_SWITCH_TRIGGERS, MOOD_KEYWORDS
+    get_personal_prompt, get_personal_prompt_base, get_professional_prompt,
+    detect_mood, MODE_SWITCH_TRIGGERS, MOOD_KEYWORDS, MOOD_TONE
 )
 from memory.rag_memory       import get_style_context, reset_recent
 from memory.long_term        import get_all_memories, save_memory
@@ -191,74 +191,77 @@ class LisaAgent:
 
     def _build_system_prompt(self, user_message: str) -> str:
         """
-        Build full system prompt with:
-          - mood-aware persona (voice/text variant)
-          - smart memory (top-k)
-          - selective RAG
-          - rolling history summary
-        Logs every step via tracer.
+        Build system prompt — Phase 0 Step 2 restructure:
+
+        ORDER (important for Gemini implicit caching):
+          1. STATIC personality base  (~200 tok) — identical every turn -> cache-ready
+          2. Memories                 (~70-100 tok)
+          3. RAG context              (CAPPED at 800 chars / ~200 tok — was up to 2091!)
+          4. History summary          (~50 tok)
+          5. MOOD_TONE               (~20 tok) — at END so static prefix above is stable
+
+        Token target: ~550 tok typical (was 1076-2800)
         """
+        RAG_CHAR_CAP = 800   # chars -> ~200 tokens. Still enough for style context.
+
         self.current_mood = detect_mood(user_message)
 
-        # ── Mood trace ──
+        # Mood trace
         matched_kws = self._matched_mood_keywords(user_message, self.current_mood)
         if self.current_mood != "neutral":
             tracer.log("Mood", f"{self.current_mood} (matched: {matched_kws})")
         else:
             tracer.log("Mood", "neutral")
 
-        # ── Choose base prompt (voice vs text) ──
+        # 1. STATIC personality base (no mood embedded -> same every turn)
         if self.mode == MODE_PERSONAL:
-            base = get_personal_prompt(self.current_mood, voice_mode=self.voice_mode)
+            base = get_personal_prompt_base(voice_mode=self.voice_mode)
         else:
             base = get_professional_prompt(voice_mode=self.voice_mode)
 
-        # ── Smart memory ──
+        # 2. Smart memory
         t0 = time.perf_counter()
         memories = get_relevant_memories(user_message, top_k=RAG_TOP_K)
         mem_ms = (time.perf_counter() - t0) * 1000
         if memories:
             approx_tok = len(memories) // 4
-            mem_lines = memories.count("\n  - ")
-            tracer.log(
-                "Memory",
-                f"Retrieved {mem_lines} facts",
-                duration_ms=mem_ms,
-                tokens=approx_tok,
-            )
+            mem_lines  = memories.count("\n  - ")
+            tracer.log("Memory", f"Retrieved {mem_lines} facts",
+                       duration_ms=mem_ms, tokens=approx_tok)
             base += f"\n\n{memories}"
         else:
             tracer.log("Memory", "No relevant memories", duration_ms=mem_ms)
 
-        # ── Selective RAG ──
+        # 3. Selective RAG with HARD CAP
         if self._should_use_rag(user_message):
             t0 = time.perf_counter()
             rag_context = get_style_context(user_message, top_k=2)
             rag_ms = (time.perf_counter() - t0) * 1000
             if rag_context:
+                if len(rag_context) > RAG_CHAR_CAP:
+                    rag_context = rag_context[:RAG_CHAR_CAP] + "..."
                 approx_tok = len(rag_context) // 4
-                tracer.log(
-                    "RAG",
-                    "Triggered → 2 chunks from chat history",
-                    duration_ms=rag_ms,
-                    tokens=approx_tok,
-                )
+                tracer.log("RAG", f"Triggered (capped {approx_tok} tok)",
+                           duration_ms=rag_ms, tokens=approx_tok)
                 base += f"\n\n{rag_context}"
             else:
                 tracer.log("RAG", "Triggered but no matches", duration_ms=rag_ms)
         else:
             tracer.log("RAG", "Skipped (short/non-emotional)")
 
-        # ── History summary ──
-        raw_turns = len(self.conversation_history)
+        # 4. History summary
+        raw_turns   = len(self.conversation_history)
         summary_len = len(self.history_summary) if self.history_summary else 0
         tracer.log("History", f"{raw_turns} raw turns + {summary_len} summary chars")
-
         if self.history_summary:
             base += f"\n\n[Earlier in this session:\n{self.history_summary}]"
 
-        return base
+        # 5. MOOD_TONE at END (keeps static prefix above consistent -> better caching)
+        mood_tone = MOOD_TONE.get(self.current_mood, "")
+        if mood_tone:
+            base += mood_tone
 
+        return base
     # ── History ───────────────────────────────────────────────────────
 
     def _trim_history(self) -> None:

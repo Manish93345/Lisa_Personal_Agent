@@ -133,21 +133,25 @@ async def lifespan(app: FastAPI):
     print("\n" + "═" * 60)
     print(f"   {AGENT_NAME.upper()} — Web UI server starting")
     print(f"   Open in browser: http://{WEB_HOST}:{WEB_PORT}")
-    print("═" * 60 + "\n")
+    print("═" * 60)
 
-    # Preload sentence-transformers model in background thread at startup.
-    # Without this, the FIRST RAG call loads the model (44-69 seconds of silence).
-    # With this, model loads during startup while the banner is showing.
-    def _preload_embedder():
-        try:
-            from memory.rag_memory import _get_local_model
-            _get_local_model()
-            print("  [RAG] Local embedding model ready.\n")
-        except Exception as e:
-            print(f"  [RAG] Preload skipped: {e}\n")
-
-    import threading
-    threading.Thread(target=_preload_embedder, daemon=True).start()
+    # Block startup until embedding model is loaded.
+    # Without this, the first user turn blocks for 35-60s while the model
+    # loads. With this, the server shows "Ready" only after the model is
+    # in memory — all turns are fast from the very first message.
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    print("\n  [Startup] Loading embedding model (first-time only, ~30-40s)...")
+    loop = asyncio.get_event_loop()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            await loop.run_in_executor(pool, lambda: __import__(
+                "memory.rag_memory", fromlist=["_get_local_model"]
+            )._get_local_model())
+        print("  [Startup] Embedding model ready ✓")
+    except Exception as e:
+        print(f"  [Startup] Embedding model skipped: {e}")
+    print(f"  [Startup] Server ready — open http://{WEB_HOST}:{WEB_PORT}\n")
 
     yield
     try:
@@ -369,6 +373,7 @@ async def tts(req: TTSRequest):
         _elevenlabs_tts, _sarvam_tts, _edge_tts, _gtts,
         _clean_text, _strip_audio_tags,
         TEMP_WAV, TEMP_MP3, TTS_PROVIDER,
+        EDGE_VOICE,
     )
     import voice.tts as tts_mod
 
@@ -382,19 +387,45 @@ async def tts(req: TTSRequest):
     original_play = tts_mod._play_file
     tts_mod._play_file = lambda path: None
 
-    # Chain definition: (label, fn, payload, file_path, mime)
-    el_step    = ("elevenlabs", _elevenlabs_tts, tagged_text, TEMP_MP3, "audio/mpeg")
-    sarvam_step = ("sarvam",    _sarvam_tts,    plain_text,  TEMP_WAV, "audio/wav")
-    edge_step  = ("edge",       _edge_tts,      plain_text,  TEMP_MP3, "audio/mpeg")
-    gtts_step  = ("gtts",       _gtts,          plain_text,  TEMP_MP3, "audio/mpeg")
+    # ── Mode-aware TTS chain ─────────────────────────────────────────────
+    # Personal mode  → Sarvam Bulbul V3 (ritu, warm Hinglish) → edge → gTTS
+    # Professional   → edge-tts NeerjaNeural (Indian English, clean) → gTTS
+    # Determined from the single agent instance — no extra API calls.
+    current_mode = "personal"
+    try:
+        current_mode = get_agent().get_mode()   # "personal" or "professional"
+    except Exception:
+        pass
 
-    chains = {
-        "elevenlabs": [el_step, sarvam_step, edge_step, gtts_step],
-        "sarvam":     [sarvam_step, el_step, edge_step, gtts_step],
-        "edge":       [edge_step, sarvam_step, gtts_step],
-        "gtts":       [gtts_step, edge_step],
-    }
-    chain = chains.get(TTS_PROVIDER, chains["elevenlabs"])
+    # Professional: swap edge-tts voice to Indian English (NeerjaNeural)
+    if current_mode == "professional":
+        tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE_PROFESSIONAL", "en-IN-NeerjaNeural")
+    else:
+        tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE", "hi-IN-SwaraNeural")
+
+    # Chain definition: (label, fn, payload, file_path, mime)
+    el_step     = ("elevenlabs", _elevenlabs_tts, tagged_text, TEMP_MP3, "audio/mpeg")
+    sarvam_step = ("sarvam",     _sarvam_tts,    plain_text,  TEMP_WAV, "audio/wav")
+    edge_step   = ("edge",       _edge_tts,      plain_text,  TEMP_MP3, "audio/mpeg")
+    gtts_step   = ("gtts",       _gtts,          plain_text,  TEMP_MP3, "audio/mpeg")
+
+    if current_mode == "professional":
+        # Professional: clean Indian English, no romantic Sarvam voice
+        chains = {
+            "sarvam":     [edge_step, gtts_step],      # skip Sarvam in pro mode
+            "elevenlabs": [edge_step, gtts_step],
+            "edge":       [edge_step, gtts_step],
+            "gtts":       [gtts_step, edge_step],
+        }
+    else:
+        # Personal: Sarvam warm Hinglish first, edge/gTTS as fallback
+        chains = {
+            "elevenlabs": [el_step, sarvam_step, edge_step, gtts_step],
+            "sarvam":     [sarvam_step, el_step, edge_step, gtts_step],
+            "edge":       [edge_step, sarvam_step, gtts_step],
+            "gtts":       [gtts_step, edge_step],
+        }
+    chain = chains.get(TTS_PROVIDER, chains.get("edge", [edge_step, gtts_step]))
 
     try:
         for label, fn, payload, out_path, mime in chain:

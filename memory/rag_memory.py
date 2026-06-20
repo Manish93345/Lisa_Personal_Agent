@@ -36,6 +36,7 @@ _collection    = None
 _use_local     = None   # set when collection is first opened
 
 _local_model   = None   # sentence-transformers model (lazy-loaded)
+_model_lock    = __import__("threading").Lock()  # prevents double-load race condition
 
 _recent_chunk_ids: list[str] = []
 MAX_RECENT = 15
@@ -76,17 +77,24 @@ def _get_collection():
 # ── Embedding ──────────────────────────────────────────────────────────
 
 def _get_local_model():
-    """Lazy-load sentence-transformers model (downloads ~450MB on first use)."""
+    """
+    Load sentence-transformers model with double-checked locking.
+    Prevents race condition where startup preload + first RAG query
+    both load the model simultaneously (was causing 60s double-load).
+    """
     global _local_model
-    if _local_model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _local_model = SentenceTransformer(
-                "paraphrase-multilingual-MiniLM-L12-v2",
-                device="cpu",         # stable on all systems; GPU auto if available
-            )
-        except ImportError:
-            raise RuntimeError("sentence-transformers not installed. Run: pip install sentence-transformers")
+    if _local_model is not None:        # fast path — no lock needed
+        return _local_model
+    with _model_lock:                   # only one thread loads at a time
+        if _local_model is None:        # re-check after acquiring lock
+            try:
+                from sentence_transformers import SentenceTransformer
+                _local_model = SentenceTransformer(
+                    "paraphrase-multilingual-MiniLM-L12-v2",
+                    device="cpu",
+                )
+            except ImportError:
+                raise RuntimeError("Run: pip install sentence-transformers")
     return _local_model
 
 

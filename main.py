@@ -49,13 +49,14 @@ def handle_command(cmd: str, agent: LisaAgent):
         print(f"  [Conversation reset]\n")
 
     elif c == "/memories":
-        mems = list_all()
+        # Smart SQLite DB se active memories fetch karo
+        mems = agent.memory_manager.get_all_active_memories()
         if not mems:
-            print("  [Koi memory nahi abhi tak]\n")
+            print("  [Memory DB] Naya database abhi ekdum khali hai ya saari temporary memories expire ho chuki hain.\n")
         else:
-            print("  [Saved Memories]")
+            print("  [Active SQLite Memories]")
             for m in mems:
-                print(f"  {m['category']}/{m['key']}: {m['value']}")
+                print(f"  [{m['category'].upper()}] {m['key']} : {m['value']}")
             print()
 
     elif c == "/remember":

@@ -63,7 +63,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.agent import LisaAgent
-from memory.long_term import list_all
 from config.settings import AGENT_NAME, USER_NAME
 
 # Token tracking + ElevenLabs key status
@@ -387,45 +386,46 @@ async def tts(req: TTSRequest):
     original_play = tts_mod._play_file
     tts_mod._play_file = lambda path: None
 
+    # ═════════════════════════════════════════════════════════════════════
+    # 1. DEFINE THE STEPS FIRST (Move this up)
+    # ═════════════════════════════════════════════════════════════════════
+    el_step     = ("elevenlabs", _elevenlabs_tts, tagged_text, TEMP_MP3, "audio/mpeg")
+    sarvam_step = ("sarvam",     _sarvam_tts,    plain_text,  TEMP_WAV, "audio/wav")
+    edge_step   = ("edge",       _edge_tts,      plain_text,  TEMP_MP3, "audio/mpeg")
+    gtts_step   = ("gtts",       _gtts,          plain_text,  TEMP_MP3, "audio/mpeg")
+
     # ── Mode-aware TTS chain ─────────────────────────────────────────────
-    # Personal mode  → Sarvam Bulbul V3 (ritu, warm Hinglish) → edge → gTTS
-    # Professional   → edge-tts NeerjaNeural (Indian English, clean) → gTTS
-    # Determined from the single agent instance — no extra API calls.
     current_mode = "personal"
     try:
         current_mode = get_agent().get_mode()   # "personal" or "professional"
     except Exception:
         pass
 
-    # Professional: swap edge-tts voice to Indian English (NeerjaNeural)
+    # ═════════════════════════════════════════════════════════════════════
+    # 2. RUN THE MODE CHECKS SECOND
+    # ═════════════════════════════════════════════════════════════════════
     if current_mode == "professional":
-        tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE_PROFESSIONAL", "en-IN-NeerjaNeural")
+        # Completely block Sarvam from the configuration maps
+        tts_mod.TTS_PROVIDER = "edge"
+        # Swap flat Indian-English to a highly conversational, warm US companion voice
+        tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE_PROFESSIONAL", "en-US-AnaNeural")
+        
+        # Build an English-only chain (Bypass Sarvam entirely)
+        chain = [edge_step, gtts_step]
     else:
-        tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE", "hi-IN-SwaraNeural")
-
-    # Chain definition: (label, fn, payload, file_path, mime)
-    el_step     = ("elevenlabs", _elevenlabs_tts, tagged_text, TEMP_MP3, "audio/mpeg")
-    sarvam_step = ("sarvam",     _sarvam_tts,    plain_text,  TEMP_WAV, "audio/wav")
-    edge_step   = ("edge",       _edge_tts,      plain_text,  TEMP_MP3, "audio/mpeg")
-    gtts_step   = ("gtts",       _gtts,          plain_text,  TEMP_MP3, "audio/mpeg")
-
-    if current_mode == "professional":
-        # Professional: clean Indian English, no romantic Sarvam voice
-        chains = {
-            "sarvam":     [edge_step, gtts_step],      # skip Sarvam in pro mode
-            "elevenlabs": [edge_step, gtts_step],
-            "edge":       [edge_step, gtts_step],
-            "gtts":       [gtts_step, edge_step],
-        }
-    else:
-        # Personal: Sarvam warm Hinglish first, edge/gTTS as fallback
-        chains = {
-            "elevenlabs": [el_step, sarvam_step, edge_step, gtts_step],
-            "sarvam":     [sarvam_step, el_step, edge_step, gtts_step],
-            "edge":       [edge_step, sarvam_step, gtts_step],
-            "gtts":       [gtts_step, edge_step],
-        }
-    chain = chains.get(TTS_PROVIDER, chains.get("edge", [edge_step, gtts_step]))
+            # Personal mode retains your configured Hinglish setup
+            tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE", "hi-IN-SwaraNeural")
+            chains = {
+                # Yahan humne sarvam_step ko sabse pehle kar diya hai
+                "sarvam":     [sarvam_step, edge_step, gtts_step],
+                
+                # Elevenlabs ke baad fallback mein sarvam ko rakha hai
+                "elevenlabs": [el_step, sarvam_step, edge_step, gtts_step],
+                
+                "edge":       [edge_step, gtts_step],
+                "gtts":       [gtts_step, edge_step],
+            }
+            chain = chains.get(TTS_PROVIDER, chains.get("edge", [edge_step, gtts_step]))
 
     try:
         for label, fn, payload, out_path, mime in chain:
@@ -544,24 +544,27 @@ async def state():
 async def set_mode(req: ModeRequest):
     if req.mode not in ("personal", "professional"):
         raise HTTPException(400, "mode must be 'personal' or 'professional'")
-    for ag in (_text_agent, _voice_agent):
-        if ag is not None:
-            ag.mode = req.mode
+    get_agent().mode = req.mode   # LisaAgent has no set_mode() — mode is a direct attribute
     return {"mode": req.mode, "ok": True}
 
 
 @app.post("/api/reset")
 async def reset():
-    for ag in (_text_agent, _voice_agent):
-        if ag is not None:
-            ag.reset_conversation()
+    get_agent().reset_conversation()
     return {"ok": True}
 
 
 @app.get("/api/memories")
 async def memories():
-    mems = list_all()
+    # Naye SQLite DB se active memories fetch karo
+    mems = get_agent().memory_manager.get_all_active_memories()
     return {"count": len(mems), "memories": mems}
+
+@app.delete("/api/memories")
+async def remove_memory(category: str, key: str):
+    # Naya MemoryManager delete_memory function sirf 'key' use karta hai
+    get_agent().memory_manager.delete_memory(key)
+    return {"ok": True}
 
 
 @app.get("/api/history")

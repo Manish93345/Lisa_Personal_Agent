@@ -195,8 +195,12 @@ def _fast_detect(message: str):
 
 # ── Slim LLM prompt — sirf jab regex fail kare ──────────────────────────
 
-INTENT_SYSTEM_PROMPT = """Tum intent detector ho. JSON return karo:
-{"action": "...", "params": {...}, "confidence": 0.0-1.0}
+INTENT_SYSTEM_PROMPT = """Tum ek smart intent detector ho. User ek sath multiple commands de sakta hai.
+ALWAYS return a JSON ARRAY of objects (chahe ek command ho ya multiple):
+[
+  {"action": "...", "params": {...}, "confidence": 0.0-1.0},
+  ...
+]
 
 Actions: open_website, play_youtube, search_youtube, open_app, search_google,
 find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
@@ -207,20 +211,27 @@ CRITICAL RULES:
 - "saved naam" mentioned → contact = saved name (not "dost"/"bhai")
 - "X ne kya bola" → whatsapp_read (READ from X)
 - "X ko bol do" → whatsapp_message (SEND to X)
-- "usko reply karo" → whatsapp_message
 - "gaana", "song", "music" + play-verb → play_youtube (query = song hint)
-- Sirf chitchat / emotional baat → action="none"
+- Agar user bole "background mein" ya "main screen pe", toh usko parameters mein capture karo (jaise find_file ya whatsapp ke liye).
+- PERSONAL YA ROMANTIC CHAT: Agar user apne life ke bare mein bataye (result, marks, travel, dates) ya romance kare → action="none" (NEVER web_search).
+- WEB SEARCH: Sirf tab jab user duniya ki koi info maange (weather, news, factual questions).
 
 Examples:
-"aniket ko bol do kal milte hain" → {"action":"whatsapp_message","params":{"contact":"aniket","message":"kal milte hain"},"confidence":0.95}
-"didi ne kya bola" → {"action":"whatsapp_read","params":{"contact":"didi"},"confidence":0.9}
-"D drive mein resume khol do" → {"action":"find_file","params":{"folder":"","file":"resume","main_screen":false},"confidence":0.95}
-"gaana chala do" → {"action":"play_youtube","params":{"query":""},"confidence":0.85}
-"koi purana hindi gaana baja do" → {"action":"play_youtube","params":{"query":"purana hindi gaana"},"confidence":0.9}
-"YouTube pe kuch bhi achha sa chala do" → {"action":"play_youtube","params":{"query":"latest bollywood"},"confidence":0.9}
-"oye kaisi ho" → {"action":"none","params":{},"confidence":0.9}
+"volume 50% kar do and then D drive ke movies folder mein infinity war play kar dena main screen pe and background mein sugri ko whatsapp message karke puchho ki shaam ko chalega" 
+→
+[
+  {"action": "system_command", "params": {"command": "volume 50"}, "confidence": 0.95},
+  {"action": "find_file", "params": {"folder": "movies", "file": "infinity war", "main_screen": true}, "confidence": 0.95},
+  {"action": "whatsapp_message", "params": {"contact": "sugri", "message": "shaam ko ghumne chalega ya nahi?", "background": true}, "confidence": 0.95}
+]
 
-SIRF JSON return karo."""
+"oye kaisi ho" 
+→
+[
+  {"action": "none", "params": {}, "confidence": 0.9}
+]
+
+SIRF JSON ARRAY return karo, koi extra text nahi."""
 
 
 def _llm_intent(message: str, tier: str = "local") -> dict | None:
@@ -242,14 +253,18 @@ def _llm_intent(message: str, tier: str = "local") -> dict | None:
         if "```" in raw:
             raw = raw.split("```")[1].lstrip("json").strip()
 
-        # Extract first JSON object
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        # Extract first JSON array
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
         if m:
             raw = m.group(0)
 
         parsed = json.loads(raw)
-        # Sanity check
-        if not isinstance(parsed, dict) or "action" not in parsed:
+        
+        # Sanity check: must be a list now
+        if not isinstance(parsed, list):
+            # Fallback if the LLM hallucinated a single dict
+            if isinstance(parsed, dict) and "action" in parsed:
+                return [parsed]
             return None
         return parsed
     except Exception as e:
@@ -257,29 +272,63 @@ def _llm_intent(message: str, tier: str = "local") -> dict | None:
         return None
 
 
-def detect_intent(message: str) -> dict:
+def detect_intent(message: str) -> list:
     """
-    Main entry:
-      1. Regex fast path (ZERO cost, multilingual)
-      2. Local Ollama LLM (FREE — if running)
-      3. CLOUD fallback (Groq fast tier — only if Ollama also fails)
-      4. Final fallback → none
+    Main entry: Returns a LIST of intent dictionaries.
     """
-    # ── Step 1: Regex fast path ──
-    fast = _fast_detect(message)
-    if fast and fast.get("confidence", 0) >= 0.85:
-        return fast
+    # ── NEW SUPER-FAST BYPASS ──
+    # Agar chat mein koi action keyword (play, open, msg) hai hi nahi, 
+    # toh multi-command ho ya single, ye pure chat hai. LLM ko mat bhejo!
+    norm = _romanize(message).lower().strip()
+    norm_words = set(re.findall(r"\w+", norm))
+    
+    if not norm_words.intersection(ACTION_KEYWORDS):
+        return [{"action": "none", "params": {}, "confidence": 0.99}]
 
-    # ── Step 2: Local Ollama ──
+    # ── Step 1: Multi-command check ──
+    # If the message has "aur", "and", "then", or commas, skip regex and force LLM
+    is_multi_command = any(word in norm for word in [" aur ", " and ", " then ", ","])
+
+    # ── Step 2: Regex fast path (Only if single command) ──
+    if not is_multi_command:
+        fast = _fast_detect(message)
+        if fast and fast.get("confidence", 0) >= 0.85:
+            return [fast]
+
+    # ── Step 3: Local Ollama (Will handle all multi-commands) ──
     parsed = _llm_intent(message, tier="local")
     if parsed:
         return parsed
 
-    # ── Step 3: Cloud fallback (Gemini Flash-Lite — 30 RPM free, only if Ollama failed) ──
-    print(f"  [Intent] Ollama unavailable → cloud fallback (gemini_lite intent tier)")
+    # ── Step 4: Cloud fallback (Gemini Flash-Lite) ──
+    print(f"  [Intent] Ollama unavailable/failed → cloud fallback")
     parsed = _llm_intent(message, tier="intent")
     if parsed:
         return parsed
 
-    # ── Step 4: Give up ──
-    return {"action": "none", "params": {}, "confidence": 0.0}
+    # ── Step 5: Give up ──
+    return [{"action": "none", "params": {}, "confidence": 0.0}]
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  STANDALONE TEST (MULTI-INTENT)
+# ══════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    print("\n" + "="*55)
+    print("   LISA — Multi-Intent Detector Test (qwen2.5:3b)")
+    print("="*55)
+
+    # You can change this to test different complex commands
+    test_prompts = [
+        "volume 50% kar do and then D drive ke movies folder mein infinity war play kar dena main screen pe and background mein sugri ko whatsapp message karke puchho ki shaam ko chalega",
+        "chrome band kar do aur weather batao"
+    ]
+
+    for prompt in test_prompts:
+        print(f"\n[User]: {prompt}")
+        result = detect_intent(prompt)
+        
+        print("[Parsed JSON Array]:")
+        print(json.dumps(result, indent=2))
+        print("-" * 55)

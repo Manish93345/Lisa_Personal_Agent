@@ -463,15 +463,32 @@ def _edge_tts(text: str) -> bool:
     edge-tts with asyncio fix for FastAPI context.
     FastAPI/uvicorn already has a running event loop — asyncio.run() fails inside it.
     Fix: create a NEW event loop in a dedicated thread.
+
+    Mode-aware behavior (detected from EDGE_VOICE):
+    - English voice (en-IN-NeerjaNeural, professional): keeps Roman text,
+      uses rate="-5%" + pitch="+2Hz" for warm, non-flat professional tone.
+    - Hindi voice (hi-IN-SwaraNeural, personal fallback): converts to Devanagari
+      for correct Hindi pronunciation.
     """
     import threading
     try:
         import edge_tts
 
-        deva_chars  = len(re.findall(r'[\u0900-\u097F]', text))
-        total_chars = max(1, len(re.sub(r'\s+', '', text)))
-        deva_ratio  = deva_chars / total_chars
-        speak_text  = text if deva_ratio > 0.30 else _romanize_to_devanagari(text)
+        is_english_voice = EDGE_VOICE.startswith("en-")
+
+        if is_english_voice:
+            # Professional mode: keep Roman English, add prosody for warmth
+            speak_text = text
+            tts_rate   = "-5%"    # slightly slower = more deliberate, natural
+            tts_pitch  = "+2Hz"   # slightly warmer than flat neutral
+        else:
+            # Personal fallback: Devanagari conversion for Hindi pronunciation
+            deva_chars  = len(re.findall(r'[\u0900-\u097F]', text))
+            total_chars = max(1, len(re.sub(r'\s+', '', text)))
+            deva_ratio  = deva_chars / total_chars
+            speak_text  = text if deva_ratio > 0.30 else _romanize_to_devanagari(text)
+            tts_rate    = "+0%"
+            tts_pitch   = "+0Hz"
 
         result = {"success": False, "error": None}
 
@@ -483,7 +500,7 @@ def _edge_tts(text: str) -> bool:
                 async def _generate():
                     communicate = edge_tts.Communicate(
                         text=speak_text, voice=EDGE_VOICE,
-                        rate="+0%", pitch="+0Hz",
+                        rate=tts_rate, pitch=tts_pitch,
                     )
                     await communicate.save(TEMP_MP3)
 
@@ -496,7 +513,7 @@ def _edge_tts(text: str) -> bool:
 
         t = threading.Thread(target=_run_in_thread, daemon=True)
         t.start()
-        t.join(timeout=30)   # 30s timeout (generous for slow connections)
+        t.join(timeout=30)
 
         if not result["success"]:
             if result["error"]:
@@ -579,3 +596,49 @@ def speak(text: str) -> None:
             return
 
     print("  [TTS] All providers failed!")
+
+# Add this at the bottom of voice/tts.py
+import queue
+import threading
+import re
+
+class StreamingTTSManager:
+    """Buffers text streams and fires TTS instantly on sentence boundaries."""
+    def __init__(self):
+        self.q = queue.Queue()
+        self.buffer = ""
+        self.worker = threading.Thread(target=self._process_queue, daemon=True)
+        self.worker.start()
+
+    def _process_queue(self):
+        while True:
+            sentence = self.q.get()
+            if sentence is None:  # Poison pill to shut down
+                self.q.task_done()
+                break
+            if sentence.strip():
+                # Call your existing single-shot TTS function
+                tts(sentence.strip())
+            self.q.task_done()
+
+    def feed(self, chunk: str):
+        self.buffer += chunk
+        # Split on sentence boundaries: . ! ? | । \n
+        match = re.search(r'([.!?।|\n]+)', self.buffer)
+        while match:
+            split_idx = match.end()
+            sentence = self.buffer[:split_idx]
+            self.buffer = self.buffer[split_idx:]
+            
+            # Send completed sentence to background TTS thread
+            if sentence.strip():
+                self.q.put(sentence.strip())
+            
+            match = re.search(r'([.!?।|\n]+)', self.buffer)
+
+    def flush(self):
+        # Push any remaining text when LLM is done
+        if self.buffer.strip():
+            self.q.put(self.buffer.strip())
+        self.buffer = ""
+        self.q.join()  # Wait for all audio to finish playing

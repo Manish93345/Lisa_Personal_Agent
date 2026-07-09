@@ -94,7 +94,7 @@ def get_relevant_memories(user_query: str, top_k: int = 3) -> str:
     causing 15-18 facts per turn. Now capped: total never exceeds
     MAX_CORE_FACTS + top_k = 8 + 3 = 11 facts maximum.
     """
-    MAX_CORE_FACTS = 8   # personal facts cap — keeps identity without bloat
+    MAX_CORE_FACTS = 20   # personal facts cap — keeps identity without bloat
 
     rows, sums = _fetch_all()
     if not rows and not sums:

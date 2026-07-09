@@ -268,61 +268,57 @@ class WhatsAppDriver:
                 pass
 
     def start(self) -> bool:
-        profile_dir = settings.WHATSAPP_PROFILE_DIR
-        Path(profile_dir).mkdir(parents=True, exist_ok=True)
-        first_run = not any(Path(profile_dir).iterdir())
+        if self.driver:
+            return True
 
-        # Kill any stale Edge processes holding our profile lock
-        self._kill_stale_edge()
+        print("  [WA] Edge browser start kar raha hoon...")
 
-        print("  [WhatsApp] Edge browser start ho rha hai...")
+        from actions.desktop_manager import _get_all_visible_hwnds, _load_dll, LISA_DESKTOP, WIN32_AVAILABLE
+        import time
+        
+        move_to_desktop3 = False
+        before_hwnds = set()
+        
+        if WIN32_AVAILABLE and _load_dll() is not None:
+            move_to_desktop3 = True
+            before_hwnds = _get_all_visible_hwnds()
+
         opts = Options()
-        opts.add_argument(f"--user-data-dir={profile_dir}")
-        opts.add_argument("--profile-directory=Default")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--log-level=3")
-        opts.add_argument("--remote-debugging-port=0")  # avoid port conflicts
-        opts.add_experimental_option("excludeSwitches", ["enable-logging"])
-
-        # Detect Edge binary location
-        for edge_path in [
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        ]:
-            if Path(edge_path).exists():
-                opts.binary_location = edge_path
-                break
-
-        if settings.WHATSAPP_HEADLESS:
-            opts.add_argument("--headless=new")
+        opts.add_argument(f"user-data-dir={settings.WHATSAPP_PROFILE_DIR}")
+        opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
+        opts.add_experimental_option('useAutomationExtension', False)
 
         try:
             self.driver = webdriver.Edge(options=opts)
+            
+            # 🔴 FIX: Pehle URL load karo, connection break nahi hoga
+            self.driver.get(settings.WHATSAPP_URL)
+            
+            # Phir chupke se Desktop 3 pe move karo
+            if move_to_desktop3:
+                time.sleep(1.0)
+                after_hwnds = _get_all_visible_hwnds()
+                new_hwnds = after_hwnds - before_hwnds
+                
+                if new_hwnds:
+                    dll = _load_dll()
+                    for hwnd in new_hwnds:
+                        try:
+                            dll.MoveWindowToDesktopNumber(hwnd, LISA_DESKTOP)
+                            print(f"  [Desktop] WhatsApp browser secretly moved to Desktop 3 (hwnd: {hwnd})")
+                        except Exception:
+                            pass
+            
+            # Wait for chat list
+            WebDriverWait(self.driver, settings.WHATSAPP_LOAD_TIMEOUT).until(
+                EC.presence_of_element_located((By.ID, "pane-side"))
+            )
+            print("  [WA] WhatsApp is ready on Desktop 3!")
+            return True
         except Exception as e:
-            print(f"  [X] Edge driver error: {e}")
+            print(f"  [WA] Error in start: {e}")
+            self.close()
             return False
-
-        self.driver.get(settings.WHATSAPP_URL)
-        print("  [WhatsApp] WhatsApp Web load ho rha hai...")
-
-        if first_run:
-            self.driver.maximize_window()
-            print("  [WhatsApp] Pehli baar — QR scan karo Edge mein")
-            ok = self._wait_login(timeout=120)
-        else:
-            ok = self._wait_login(timeout=settings.WHATSAPP_LOAD_TIMEOUT)
-
-        if not ok:
-            print("  [X] Login timeout")
-            return False
-
-        print("  [WhatsApp] QR scan successful! Session save ho gaya")
-        # 8s → 3s
-        print("  [WhatsApp] Sidebar load ho rhi hai (3s wait)...")
-        time.sleep(3)
-        print("  [WhatsApp] Ready!")
-        return True
 
     def _wait_login(self, timeout=60) -> bool:
         try:
@@ -624,7 +620,7 @@ class WhatsAppDriver:
         _delay(0.5, 0.8)
 
         try:
-            unread_chats = self.driver.execute_script("""
+            unread_chats = self.driver.execute_script(r"""
                 const results = [];
                 // Find all chat rows in sidebar
                 const chatRows = document.querySelectorAll(
@@ -751,7 +747,7 @@ class WhatsAppDriver:
         _delay(1.0, 1.5)  # Chat load hone do
 
         try:
-            messages = self.driver.execute_script("""
+            messages = self.driver.execute_script(r"""
                 const count = arguments[0];
                 const results = [];
 

@@ -541,7 +541,10 @@ async function renderMemories() {
     }
     $traceContent.innerHTML = j.memories.map(m => `
       <div class="memory-card">
-        <div class="memory-cat">${escapeHtml(m.category || "")}</div>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="memory-cat">${escapeHtml(m.category || "")}</div>
+            <button onclick="deleteMemory('${escapeHtml(m.category)}', '${escapeHtml(m.key)}')" style="background:transparent; border:none; cursor:pointer; font-size:14px;" title="Delete Fact">🗑️</button>
+        </div>
         <div class="memory-key">${escapeHtml(m.key || "")}</div>
         <div class="memory-val">${escapeHtml(m.value || "")}</div>
       </div>
@@ -897,6 +900,16 @@ if ($tokenBadge) {
   });
 }
 
+
+window.deleteMemory = async function(cat, key) {
+    if (!confirm("Are you sure you want to delete this memory?")) return;
+    try {
+        await fetch(API + `/api/memories?category=${encodeURIComponent(cat)}&key=${encodeURIComponent(key)}`, { method: "DELETE" });
+        renderMemories(); // Refresh the list
+    } catch (e) {
+        toast("Failed to delete memory", "error");
+    }
+};
 
 // ════════════════════════════════════════════════════════════════════
 //  INIT

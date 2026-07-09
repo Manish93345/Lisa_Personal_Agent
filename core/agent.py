@@ -12,6 +12,8 @@ LISA — Main Agent (with Smart Memory + WhatsApp Confirmation Flow)
   - Tags stripped from history entries (saves tokens + prevents model copying tag style)
 """
 import re as _re_agent
+import json
+from memory.memory_db import MemoryManager
 
 def _strip_audio_tags_agent(text: str) -> str:
     """Strip ElevenLabs audio tags like [excited], [soft] from text.
@@ -151,6 +153,7 @@ class LisaAgent:
         self.last_read_messages     = []
         self.last_unread_contacts   = []
         self.history_summary = ""
+        self.memory_manager = MemoryManager()
         suffix = " (VOICE)" if voice_mode else ""
         print(f"\n  {AGENT_NAME} initialized in {self.mode.upper()} mode{suffix}\n")
 
@@ -189,6 +192,15 @@ class LisaAgent:
         msg_lower = message.lower()
         return [kw for kw in MOOD_KEYWORDS.get(mood, []) if kw in msg_lower][:3]
 
+    def _get_active_memory_context(self) -> str:
+        active_memories = self.memory_manager.get_all_active_memories()
+        if not active_memories:
+            return ""
+        context_str = "USER LONG-TERM MEMORIES:\n"
+        for mem in active_memories:
+            context_str += f"- [{mem['category'].upper()}] {mem['key']}: {mem['value']}\n"
+        return context_str
+
     def _build_system_prompt(self, user_message: str) -> str:
         """
         Build system prompt — Phase 0 Step 2 restructure:
@@ -219,18 +231,17 @@ class LisaAgent:
         else:
             base = get_professional_prompt(voice_mode=self.voice_mode)
 
-        # 2. Smart memory
+        # 2. Smart memory (SQLite DB)
         t0 = time.perf_counter()
-        memories = get_relevant_memories(user_message, top_k=RAG_TOP_K)
+        memories = self._get_active_memory_context()
         mem_ms = (time.perf_counter() - t0) * 1000
         if memories:
             approx_tok = len(memories) // 4
-            mem_lines  = memories.count("\n  - ")
-            tracer.log("Memory", f"Retrieved {mem_lines} facts",
+            tracer.log("Memory", f"Retrieved active facts from DB",
                        duration_ms=mem_ms, tokens=approx_tok)
             base += f"\n\n{memories}"
         else:
-            tracer.log("Memory", "No relevant memories", duration_ms=mem_ms)
+            tracer.log("Memory", "No active memories found", duration_ms=mem_ms)
 
         # 3. Selective RAG with HARD CAP
         if self._should_use_rag(user_message):
@@ -318,10 +329,83 @@ class LisaAgent:
 
         threading.Thread(target=_summarize_bg, daemon=True).start()
 
+    def _extract_and_update_memory(self, history: list) -> None:
+        if len(history) < 2:
+            return
+        
+        history_str = ""
+        for msg in history:
+            role = "Manish" if msg.get("role") == "user" else "Lisa"
+            history_str += f"{role}: {msg.get('content', '')}\n"
+
+        prompt = """Tum ek strict Data Extraction Bot ho. Tumhara kaam user ki chat se sirf 'Real-Life Hard Facts' nikalna hai.
+
+CRITICAL RULES (HAMESHA FOLLOW KARO):
+1. Romantic baatein, flirting, kisses, wifey jokes 100% IGNORE karo.
+2. SYSTEM COMMANDS (volume change, song play, video sent, last_message, whatsapp draft) 100% IGNORE karo. Inko memory mein save NAHI karna hai.
+3. KEWAL IN CATEGORIES KA DATA SAVE KARO: 'academic' (Semester, SGPA), 'personal_info', 'career', 'preferences'.
+4. Agar baat rule 3 se match nahi karti, toh immediately empty operations return karo!
+
+EXAMPLES:
+Chat: "volume 100 kar do aur sugri ko message karo ki video send kiya hai"
+Output: {"operations": []}
+
+Chat: "mera 6th sem ka result aa gaya, 9.42 sgpa aaya hai"
+Output: {"operations": [{"action": "ADD", "key": "latest_marks", "value": "6th Sem SGPA: 9.42", "category": "academic", "expires_at": null}]}
+
+OUTPUT STRICTLY IN JSON FORMAT:
+{
+    "operations": [
+        {"action": "ADD/UPDATE/DELETE", "key": "topic", "value": "details", "category": "academic", "expires_at": null}
+    ]
+}"""
+        
+        try:
+            response_text = call_llm_simple(
+                system_prompt=prompt,
+                user_message=f"CHAT HISTORY:\n{history_str}",
+                temperature=0.1,
+                max_tokens=300,
+                tier="local",
+                task="memory"
+            )
+            
+            import re
+            
+            clean_text = response_text.replace("```json", "").replace("```", "").strip()
+            if not clean_text: return
+            
+            # Smart JSON Extractor: Sirf { se lekar } tak ka data nikalega
+            match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+            if match:
+                clean_text = match.group(0)
+            else:
+                return  # JSON nahi mila toh safely return kar jao
+            
+            data = json.loads(clean_text)
+            operations = data.get("operations", [])
+            
+            for op in operations:
+                action = op.get("action")
+                key = op.get("key")
+                value = op.get("value", "")
+                category = op.get("category", "general")
+                expires_at = op.get("expires_at")
+
+                if action in ["ADD", "UPDATE"]:
+                    self.memory_manager.upsert_memory(key, value, category, expires_at)
+                elif action == "DELETE":
+                    self.memory_manager.delete_memory(key)
+                    
+            print(f"  [Memory DB] Processed {len(operations)} smart operations.")
+        except Exception as e:
+            print(f"  [Memory DB] Extractor failed: {e}")
+
+
     def _maybe_extract_memory(self) -> None:
         if self.turn_count > 0 and self.turn_count % EXTRACT_EVERY == 0:
             tracer.log("Memory", f"Extracting facts (turn {self.turn_count})...")
-            extract_and_save(self.conversation_history)
+            self._extract_and_update_memory(self.conversation_history)
 
     # ── WhatsApp confirmation ─────────────────────────────────────────
 
@@ -340,7 +424,15 @@ class LisaAgent:
 
     def _is_cancel(self, msg: str) -> bool:
         m = msg.lower().strip()
-        for w in m.split():
+        words = m.split()
+        
+        # Smart Correction Detection: Agar lamba sentence hai aur "instruction" wale words hain,
+        # toh user message ko theek (correct) karwa raha hai, cancel nahi.
+        if len(words) > 3:
+            if any(cw in m for cw in ["bol", "likh", "add", "change", "send", "bhej", "karo", "kah"]):
+                return False # Isko cancel mat maano, Fallback to Intent Detector
+
+        for w in words:
             if w in CANCEL_WORDS:
                 return True
         for phrase in CANCEL_WORDS:
@@ -390,6 +482,8 @@ class LisaAgent:
         done_event.wait(timeout=timeout)
 
         if result_holder["success"]:
+            from actions.whatsapp_actions import close_driver
+            close_driver() # Send hote hi browser band!
             return f"Bhej diya jaan! {result_holder['msg']}"
         elif done_event.is_set():
             return f"Yaar bhej nahi paayi -- {result_holder['msg']}"
@@ -915,6 +1009,52 @@ class LisaAgent:
         tracer.turn_end(reply)
         return reply
 
+    # Add this inside LisaAgent class in core/agent.py
+    def chat_stream(self, user_message: str):
+        """Streams the response for real-time TTS processing."""
+        from core.llm_client import call_llm_stream
+        from core.tracer import tracer
+        
+        tracer.turn_start(user_message)
+        
+        # 1. Routing & Action Check (identical to normal chat)
+        action_done, action_result = self._handle_routing(user_message)
+        if action_done and not action_result:
+            return  # Action handled entirely, no chat needed
+
+        context_blocks = []
+        if action_result:
+            context_blocks.append(f"[System Action Result: {action_result}]")
+
+        # 2. Memory & RAG (identical to normal chat)
+        from memory.long_term import get_all_memories
+        from memory.rag_memory import query_chats
+        
+        mem_str = get_all_memories(user_message, top_k=3)
+        if mem_str: context_blocks.append(f"[Core Memories]\n{mem_str}")
+        
+        rag_str = query_chats(user_message, top_k=2)
+        if rag_str: context_blocks.append(f"[Past Conversation Style]\n{rag_str}")
+
+        # 3. Prompt Construction
+        system_prompt = self._build_system_prompt()
+        if context_blocks:
+            user_message = "\n\n".join(context_blocks) + "\n\nUser: " + user_message
+
+        # 4. Stream and Yield
+        full_reply = ""
+        for chunk in call_llm_stream(system_prompt, self.conversation_history, user_message):
+            full_reply += chunk
+            yield chunk
+
+        # 5. Save State
+        self.conversation_history.append({"role": "user", "content": user_message})
+        # Note: assuming _strip_audio_tags_agent is defined in agent.py
+        self.conversation_history.append({"role": "assistant", "content": _strip_audio_tags_agent(full_reply)})
+        self._trim_history()
+        
+        tracer.turn_end(full_reply)
+
     # ── Session end ───────────────────────────────────────────────────
 
     def end_session(self) -> None:
@@ -925,9 +1065,8 @@ class LisaAgent:
             pass
 
         if len(self.conversation_history) >= 4:
-            print(f"\n  [Memory] Session khatam -- facts save kar rhi hoon...")
-            saved = extract_and_save(self.conversation_history)
-            print(f"  [Memory] {saved} facts saved.")
+            print(f"\n  [Memory] Session khatam -- smart update chal raha hai...")
+            self._extract_and_update_memory(self.conversation_history)
 
     # ── Utilities ─────────────────────────────────────────────────────
 

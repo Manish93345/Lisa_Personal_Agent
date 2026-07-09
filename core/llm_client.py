@@ -432,3 +432,40 @@ def print_usage():
         total = stats["in"] + stats["out"]
         print(f"     {prov:40s} {stats['requests']:4d} req | {total:>7,} tok")
     print()
+
+
+def call_llm_stream(system_prompt, history, user_message, temperature=0.72, max_tokens=280):
+    """Streams the LLM response token-by-token (Primary: Gemini 2.5 Flash)."""
+    import os
+    from google import genai
+    
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY missing")
+
+    client = genai.Client(api_key=api_key)
+    model_name = CLOUD_CHAT_MODELS.get("gemini", "gemini-2.5-flash")
+
+    # Format history for Gemini
+    contents = []
+    for msg in history:
+        role = "user" if msg.get("role") == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg.get("content", "")}]})
+    contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+    try:
+        response = client.models.generate_content_stream(
+            model=model_name,
+            contents=contents,
+            config=genai.types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+        )
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
+    except Exception as e:
+        print(f"  [LLM Stream Error]: {e}")
+        yield "Abhi thoda network issue hai, please try again."

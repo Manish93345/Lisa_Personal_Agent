@@ -1,11 +1,11 @@
 """
-LISA — Action Router (v3)
-===========================
-[FIX v3]
-  - play_youtube ke liye query EMPTY hone par user_message se
-    smart extraction hota hai (e.g., "koi purana hindi gaana baja do"
-    → query="purana hindi gaana")
-  - Devanagari input bhi handle hota hai (transliterate before extract)
+LISA — Action Router (v4 - Task Chaining Engine)
+================================================
+[FIX v4]
+  - Multi-Intent Support: route_action ab ek list of intents accept
+    karta hai aur unhe sequentially execute karta hai.
+  - Aggregation: Multiple actions ke results combine karke agent.py
+    ko return karta hai.
 """
 
 import re
@@ -46,7 +46,7 @@ ACTION_MAP = {
 SPECIAL_PARAM_ACTIONS = {
     "find_file", "whatsapp_message", "whatsapp_file",
     "whatsapp_unread", "whatsapp_read", "web_search",
-    "play_youtube", "search_youtube",     # ← naye: query smart-extract karte hain
+    "play_youtube", "search_youtube",
 }
 
 
@@ -88,102 +88,118 @@ _STOPWORDS = {
 
 
 def _extract_play_query(user_message: str) -> str:
-    """
-    Extract the actual song/genre hint from a play command.
-
-    "koi purana hindi gaana baja do" → "purana hindi gaana"
-    "YouTube pe shreya ghoshal ka song chala do" → "shreya ghoshal song"
-    "kuch romantic music sunao" → "romantic music"
-    Empty / ambiguous → "latest bollywood songs"
-    """
     text = _romanize_inline(user_message).lower()
-    # Remove punctuation
     text = re.sub(r'[^\w\s]', ' ', text)
     tokens = [t for t in text.split() if t and t not in _STOPWORDS]
-    # Keep only nouns/adjectives (everything except stopwords)
     query = " ".join(tokens).strip()
 
     if not query or len(query) < 3:
         return "latest bollywood songs"
-    # Cap length
     return query[:80]
 
 
-# ── Main router ──────────────────────────────────────────────────────
+# ── Main router (Task Chaining Engine) ───────────────────────────────
 
 def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
-    intent     = detect_intent(user_message)
-    action     = intent.get("action", "none")
-    params     = intent.get("params", {})
-    confidence = intent.get("confidence", 0.0)
-
-    if action == "none" or confidence < MIN_CONFIDENCE:
+    intents = detect_intent(user_message)
+    
+    # Backward compatibility: agar dict return hua toh list mein wrap karo
+    if isinstance(intents, dict):
+        intents = [intents]
+        
+    valid_intents = [
+        i for i in intents 
+        if i.get("action", "none") != "none" and i.get("confidence", 0.0) >= MIN_CONFIDENCE
+    ]
+    
+    if not valid_intents:
         return None
-
-    action_fn = ACTION_MAP.get(action)
-    if not action_fn:
-        return None
-
-    # ── Special param handling ─────────────────────────────────────
-    if action in SPECIAL_PARAM_ACTIONS:
+        
+    overall_success = True
+    regular_results = []
+    special_result = None
+    
+    # Execute all valid actions sequentially
+    for intent in valid_intents:
+        action = intent.get("action")
+        params = intent.get("params", {})
+        action_fn = ACTION_MAP.get(action)
+        
+        if not action_fn:
+            continue
+            
+        print(f"[Router] Executing chained action: {action}")
+        
         try:
-            if action == "find_file":
-                return action_fn(
-                    query          = user_message,
-                    folder         = params.get("folder", ""),
-                    file           = params.get("file", ""),
-                    on_main_screen = params.get("main_screen", False),
-                )
-
-            elif action == "whatsapp_message":
-                return action_fn(
-                    contact = params.get("contact", ""),
-                    query   = user_message,
-                    message = params.get("message", ""),
-                    context = context,
-                )
-
-            elif action == "whatsapp_file":
-                return action_fn(
-                    contact = params.get("contact", ""),
-                    folder  = params.get("folder", ""),
-                    file    = params.get("file", ""),
-                    query   = user_message,
-                    context = context,
-                )
-
-            elif action == "whatsapp_unread":
-                return action_fn(query=user_message)
-
-            elif action == "whatsapp_read":
-                return action_fn(
-                    contact = params.get("contact", ""),
-                    query   = user_message,
-                )
-
-            elif action == "web_search":
-                return action_fn(
-                    query       = params.get("query", user_message),
-                    search_type = params.get("type", "search"),
-                    city        = params.get("city", ""),
-                )
-
-            elif action in ("play_youtube", "search_youtube"):
-                # ← NEW: smart query extraction if intent gave empty/missing
-                q = params.get("query", "").strip()
-                if not q:
-                    q = _extract_play_query(user_message)
-                print(f"  [YT] resolved query: '{q}'")
-                return action_fn(q)
-
+            # ── Special param handling ──
+            if action in SPECIAL_PARAM_ACTIONS:
+                if action == "find_file":
+                    success, msg = action_fn(
+                        query          = user_message,
+                        folder         = params.get("folder", ""),
+                        file           = params.get("file", ""),
+                        on_main_screen = params.get("main_screen", False),
+                    )
+                elif action == "whatsapp_message":
+                    success, msg = action_fn(
+                        contact = params.get("contact", ""),
+                        query   = user_message,
+                        message = params.get("message", ""),
+                        context = context,
+                    )
+                elif action == "whatsapp_file":
+                    success, msg = action_fn(
+                        contact = params.get("contact", ""),
+                        folder  = params.get("folder", ""),
+                        file    = params.get("file", ""),
+                        query   = user_message,
+                        context = context,
+                    )
+                elif action == "whatsapp_unread":
+                    success, msg = action_fn(query=user_message)
+                elif action == "whatsapp_read":
+                    success, msg = action_fn(
+                        contact = params.get("contact", ""),
+                        query   = user_message,
+                    )
+                elif action == "web_search":
+                    success, msg = action_fn(
+                        query       = params.get("query", user_message),
+                        search_type = params.get("type", "search"),
+                        city        = params.get("city", ""),
+                    )
+                elif action in ("play_youtube", "search_youtube"):
+                    q = params.get("query", "").strip()
+                    if not q:
+                        q = _extract_play_query(user_message)
+                    success, msg = action_fn(q)
+            else:
+                # ── Default single-arg action ──
+                query = params.get("query", user_message)
+                success, msg = action_fn(query)
+                
+            if not success:
+                overall_success = False
+                
+            # Separate special agent.py triggers from regular text results
+            if msg.startswith("WEB_RESULT") or msg.startswith("WHATSAPP_") or msg.startswith("CONFIRM_"):
+                special_result = (success, msg)
+            else:
+                regular_results.append(msg)
+                
         except Exception as e:
-            print(f"[Router] Error: {e}")
-            return False, "action complete nahi hua"
+            print(f"[Router] Error executing {action}: {e}")
+            overall_success = False
+            regular_results.append(f"{action} failed")
 
-    # ── Default single-arg action ──
-    query = params.get("query", user_message)
-    try:
-        return action_fn(query)
-    except Exception as e:
-        print(f"[Router] Error: {e}")
-        return False, "action complete nahi hua"
+    # ── Aggregation & Return Logic ──
+    # If there is a special flow (WhatsApp confirm/Read/Web), return it so agent.py triggers its specific UI logic.
+    if special_result:
+        return special_result
+        
+    # Otherwise, join all standard results into one big context string
+    if regular_results:
+        combined_msg = " | ".join(regular_results)
+        return (overall_success, combined_msg)
+        
+    return None

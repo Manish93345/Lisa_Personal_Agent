@@ -43,6 +43,19 @@ def main():
                 break
 
             print(f"{USER_NAME}: {user_text}")
+            # --- NEW STREAMING BLOCK ---
+            from voice.tts import StreamingTTSManager
+            
+            print(f"{AGENT_NAME}: ", end="", flush=True)
+            
+            streamer = StreamingTTSManager()
+            for token in agent.chat_stream(user_text):
+                print(token, end="", flush=True)
+                streamer.feed(token)
+                
+            print("\n")  # Newline after LLM finishes
+            streamer.flush() # Blocks until the last audio chunk finishes playing
+            # ---------------------------
             reply = agent.chat(user_text)
             print(f"{AGENT_NAME}: {reply}\n")
             speak(reply)

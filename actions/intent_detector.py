@@ -161,6 +161,8 @@ ACTION_KEYWORDS = {
     "wikipedia",
     # Removed: "batao" (too conversational — "batao kya hua" is NOT an action)
     # Removed: "kya hai" (two-word phrase, doesn't match single-word set anyway)
+    # file search ke liye
+    "dhundh", "search", "kahan", "kaha", "file", "document", "resume", "folder",
 }
 
 
@@ -195,43 +197,22 @@ def _fast_detect(message: str):
 
 # ── Slim LLM prompt — sirf jab regex fail kare ──────────────────────────
 
-INTENT_SYSTEM_PROMPT = """Tum ek smart intent detector ho. User ek sath multiple commands de sakta hai.
-ALWAYS return a JSON ARRAY of objects (chahe ek command ho ya multiple):
-[
-  {"action": "...", "params": {...}, "confidence": 0.0-1.0},
-  ...
-]
+INTENT_SYSTEM_PROMPT = """Tum intent detector ho. JSON return karo:
+{"action": "...", "params": {...}, "confidence": 0.0-1.0}
 
 Actions: open_website, play_youtube, search_youtube, open_app, search_google,
 find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
 web_search, system_command, none
 
-CRITICAL RULES:
-- "D drive", "folder", "file", "laptop mein" → find_file (NEVER play_youtube)
-- "saved naam" mentioned → contact = saved name (not "dost"/"bhai")
-- "X ne kya bola" → whatsapp_read (READ from X)
-- "X ko bol do" → whatsapp_message (SEND to X)
-- "gaana", "song", "music" + play-verb → play_youtube (query = song hint)
-- Agar user bole "background mein" ya "main screen pe", toh usko parameters mein capture karo (jaise find_file ya whatsapp ke liye).
-- PERSONAL YA ROMANTIC CHAT: Agar user apne life ke bare mein bataye (result, marks, travel, dates) ya romance kare → action="none" (NEVER web_search).
-- WEB SEARCH: Sirf tab jab user duniya ki koi info maange (weather, news, factual questions).
+CRITICAL RULES (HAMESHA FOLLOW KARO):
+1. FILE SEARCH: Agar user bole "dhundh", "search", "kaha hai", "kaha rakhe hain" kisi document/file ke liye → action MUST be "find_file". (Example params: {"file": "LancerTech"})
+2. NO FAKE WHATSAPP: "wifey ji", "baby", "jaan" ye sab AI ke liye pyaar wale words hain. Inko WhatsApp contact samajh kar message MAT bhejna!
+3. WHATSAPP SIRF TAB: Jab user explicitly bole "X ko message bhejo" ya "X ko bol do".
+4. PERSONAL CHAT: Agar action samajh na aaye, toh "none" return karo.
 
-Examples:
-"volume 50% kar do and then D drive ke movies folder mein infinity war play kar dena main screen pe and background mein sugri ko whatsapp message karke puchho ki shaam ko chalega" 
-→
-[
-  {"action": "system_command", "params": {"command": "volume 50"}, "confidence": 0.95},
-  {"action": "find_file", "params": {"folder": "movies", "file": "infinity war", "main_screen": true}, "confidence": 0.95},
-  {"action": "whatsapp_message", "params": {"contact": "sugri", "message": "shaam ko ghumne chalega ya nahi?", "background": true}, "confidence": 0.95}
-]
-
-"oye kaisi ho" 
-→
-[
-  {"action": "none", "params": {}, "confidence": 0.9}
-]
-
-SIRF JSON ARRAY return karo, koi extra text nahi."""
+ALWAYS return a JSON ARRAY of objects:
+[ {"action": "...", "params": {...}, "confidence": 0.9} ]
+SIRF JSON ARRAY return karo."""
 
 
 def _llm_intent(message: str, tier: str = "local") -> dict | None:
@@ -287,7 +268,7 @@ def detect_intent(message: str) -> list:
 
     # ── Step 1: Multi-command check ──
     # If the message has "aur", "and", "then", or commas, skip regex and force LLM
-    is_multi_command = any(word in norm for word in [" aur ", " and ", " then ", ","])
+    is_multi_command = any(word in norm for word in [" aur ", " and ", " then "])
 
     # ── Step 2: Regex fast path (Only if single command) ──
     if not is_multi_command:
@@ -295,14 +276,14 @@ def detect_intent(message: str) -> list:
         if fast and fast.get("confidence", 0) >= 0.85:
             return [fast]
 
-    # ── Step 3: Local Ollama (Will handle all multi-commands) ──
-    parsed = _llm_intent(message, tier="local")
+    # ── Step 3: Fast Cloud API (Groq/Gemini) ──
+    parsed = _llm_intent(message, tier="intent") # Pehle lightning-fast API try karo
     if parsed:
         return parsed
 
-    # ── Step 4: Cloud fallback (Gemini Flash-Lite) ──
-    print(f"  [Intent] Ollama unavailable/failed → cloud fallback")
-    parsed = _llm_intent(message, tier="intent")
+    # ── Step 4: Local Ollama (Fallback) ──
+    print(f"  [Intent] Cloud failed/unavailable → Local Ollama fallback")
+    parsed = _llm_intent(message, tier="local")
     if parsed:
         return parsed
 

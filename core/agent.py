@@ -901,6 +901,33 @@ OUTPUT STRICTLY IN JSON FORMAT:
                 tracer.turn_end(reply)
                 return reply
 
+            # ── Local File Search Result ──
+            if action_msg.startswith("SYSTEM_RESULT|find_file|"):
+                data = action_msg.split("|")[2]
+                
+                if "nahi mili" in data or "nahi mila" in data:
+                    augmented = (
+                        f"{user_message}\n\n"
+                        f"[System: File search ki par '{data}'. "
+                        f"User ko naturally batao ki file nahi mil rahi, shayad delete ho gayi hai ya naam alag hai.]"
+                    )
+                else:
+                    files_list = data.split(";;")
+                    formatted_files = "\n".join([f"- {f}" for f in files_list])
+                    augmented = (
+                        f"{user_message}\n\n"
+                        f"[System: Local system mein ye files mili hain:\n{formatted_files}\n\n"
+                        f"User ko naturally batao ki file kahan save hai. "
+                        f"Agar ek se zyada hain, toh paths clear karke batao taaki user ko easily mil jaye.]"
+                    )
+                
+                reply = self._llm_call(system_prompt, self.conversation_history, augmented, tier="premium")
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": _strip_audio_tags_agent(reply)})
+                self._trim_history()
+                tracer.turn_end(reply)
+                return reply
+
             # ── WhatsApp Read Result ──
             if action_msg.startswith("WHATSAPP_READ_RESULT"):
                 parts   = action_msg.split("|")

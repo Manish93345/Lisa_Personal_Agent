@@ -168,6 +168,18 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                         search_type = params.get("type", "search"),
                         city        = params.get("city", ""),
                     )
+
+                # === FILE SEARCH ACTION ===
+                elif action == "find_file":
+                    # Intent detector ne jo file ka naam pakda hai
+                    file_query = params.get("file", "")
+                    if not file_query:
+                        return False, "File ka naam nahi bataya."
+                        
+                    from actions.file_actions import search_local_file
+                    return search_local_file(file_query)
+                    
+                    
                 elif action in ("play_youtube", "search_youtube"):
                     q = params.get("query", "").strip()
                     if not q:

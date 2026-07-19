@@ -76,6 +76,13 @@ FAST_PATTERNS = [
          "confidence": 1.0
      }),
 
+     # ─────────── Stealth Watcher (Phase 3) ───────────
+    (r"\b(?:monitor|stealth|nigraani|nazar)\b.*(?:karna|rakhna|on|start|lagao)",
+     lambda m: {"action": "start_stealth", "params": {}, "confidence": 1.0}),
+
+    (r"\b(?:report\s*do|kya\s*hua|peeche\s*se|activity\s*batao)\b",
+     lambda m: {"action": "stop_stealth", "params": {}, "confidence": 1.0}),
+
     # ─────────── WhatsApp ───────────
     (r"\b(whatsapp|wp)\b.*\b(check|dekho|naya|unread|message aa(?:ya|e))\b",
      lambda m: {"action": "whatsapp_unread", "params": {}, "confidence": 0.95}),
@@ -177,6 +184,8 @@ ACTION_KEYWORDS = {
     # file search ke liye
     "dhundh", "search", "kahan", "kaha", "file", "document", "resume", "folder",
     "activate", "shift", "level", "security", "mode", "lockdown", "password",
+    # ACTION_KEYWORDS mein ye words add karo:
+    "monitor", "stealth", "nigraani", "report", "peeche", "nazar",
 }
 
 
@@ -215,12 +224,13 @@ INTENT_SYSTEM_PROMPT = """Tum ek strict AI intent detector ho. Output HAMESHA va
 
 Actions: open_website, play_youtube, search_youtube, open_app, search_google,
 find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
-web_search, system_command, change_security_level, none
+web_search, system_command, change_security_level, start_stealth, stop_stealth, none
 
 CRITICAL RULES (HAMESHA FOLLOW KARO):
 1. FILE SEARCH: Agar "dhundh", "search", "kaha hai" aaye -> "find_file"
 2. NO FAKE WHATSAPP: "wifey", "baby", "jaan" contacts nahi hain. Inko message mat bhejna.
 3. SECURITY LEVEL: Agar user bole "Level X activate karo", "Level X par aao" ya "security shift karo", toh action HAMESHA "change_security_level" hoga. Chahe sentence mein kitni bhi flirting kyu na ho, COMMAND IGNORE NAHI HONI CHAHIYE. 
+4. STEALTH MONITORING: Agar user bole "sab monitor karo" ya "nazar rakho" -> "start_stealth". Agar bole "report do" ya "kya hua tha" -> "stop_stealth".
 
 EXAMPLES (INHE STRICTLY FOLLOW KARO):
 
@@ -229,6 +239,9 @@ Output: [{"action": "change_security_level", "params": {"level": 1, "password": 
 
 User: "wapas level 0 par shift kar do baby password hai Lisajaanu"
 Output: [{"action": "change_security_level", "params": {"level": 0, "password": "Lisajaanu"}, "confidence": 0.99}]
+
+User: "security level 1 activate kar do and abhi se sab monitor karna"
+Output: [{"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}, {"action": "start_stealth", "params": {}, "confidence": 0.99}]
 
 User: "mera 6th sem ka result aa gaya"
 Output: [{"action": "none", "params": {}, "confidence": 0.99}]

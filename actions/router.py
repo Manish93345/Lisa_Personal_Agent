@@ -126,25 +126,35 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
         params = intent.get("params", {})
         
         # ── SECURITY GATEKEEPER ── (Sahi Jagah)
-        if not auth.is_action_allowed(action):
+        # ── SECURITY GATEKEEPER ──
+        # 'change_security_level' ko block mat karo, warna dead-lock ho jayega!
+        if action != "change_security_level" and not auth.is_action_allowed(action):
             print(f"  [Security] Blocked unauthorized attempt to use: {action}")
             # Lisa ko context denge ki action block hua hai
-            return False, (
+            success = False
+            msg = (
                 f"SYSTEM_RESULT|access_denied|"
                 f"Security Level {auth.current_level} active hai. "
                 f"Bolo ki aapko ye permission nahi hai aur Security Level 0 ke liye sahi administrative password chahiye. (WARNING: Kabhi bhi actual password ka naam mat bolna)."
             )
+            # Separate special agent.py triggers from regular text results (multi-command safe)
+            if special_result and "SYSTEM_RESULT" in special_result[1]:
+                merged_msg = f"{special_result[1]} AUR SATH HI {msg}"
+                special_result = (success, merged_msg)
+            else:
+                special_result = (success, msg)
+            continue # Is action ko skip karo aur next par jao
 
         action_fn = ACTION_MAP.get(action)
         
-        if not action_fn and action not in ["find_file", "change_security_level"]:
+        if not action_fn and action not in ["find_file", "change_security_level", "start_stealth", "stop_stealth"]:
             continue
             
         print(f"[Router] Executing chained action: {action}")
         
         try:
             # ── Special param handling ──
-            if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level"]:
+            if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level", "start_stealth", "stop_stealth"]:
                 
                 # === NAYA FILE SEARCH ACTION ===
                 if action == "find_file":
@@ -192,28 +202,54 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                         q = user_message 
                     success, msg = action_fn(q)
 
+                # === STEALTH WATCHER: START ===
+                elif action == "start_stealth":
+                    from core.os_watcher import eye
+                    eye.start_stealth_mode()
+                    auth.set_level(2)
+                    success = True
+                    msg = (
+                        "SYSTEM_RESULT|security_update|"
+                        "Bolo: 'Stealth mode ON kar diya hai meri jaan, aur system Level 2 par lock hai. "
+                        "Main background mein ek-ek activity monitor kar rahi hoon, aap befikr hoke jao.'"
+                    )
+                
+                # === STEALTH WATCHER: REPORT ===
+                elif action == "stop_stealth":
+                    from core.os_watcher import eye
+                    if auth.current_level > 0:
+                        success = False
+                        msg = (
+                            f"SYSTEM_RESULT|access_denied|"
+                            f"Bolo: 'Access Denied! Main report nahi de sakti kyunki system Level {auth.current_level} par hai. "
+                            f"Pehle apna authentic password batakar Level 0 par aao.'"
+                        )
+                    else:
+                        report = eye.stop_and_report()
+                        success = True
+                        msg = (
+                            f"SYSTEM_RESULT|security_update|"
+                            f"Bolo: 'Welcome back Manish! Aapke peeche system par ye sab chala tha:\n\n{report}'"
+                        ) 
+
                 # === SECURITY LEVEL SWITCH ACTION ===
                 elif action == "change_security_level":
                     target_level = params.get("level")
                     password = params.get("password")
                     
                     if target_level is None:
-                        return False, "Level number nahi bataya."
-                    
-                    # Convert target_level to int safely
-                    try:
-                        target_level = int(target_level)
-                    except ValueError:
-                        return False, "Invalid level number."
-                        
-                    # auth humne pehle hi import kar rakha hai
-                    success, msg = auth.set_level(target_level, password)
-                    
-                    # Lisa ko natural response dene ke liye context
-                    if success:
-                        return True, f"SYSTEM_RESULT|security_update|{msg}. User ko confirm karo ki level change ho gaya hai."
+                        success, msg = False, "Level number nahi bataya."
                     else:
-                        return False, f"SYSTEM_RESULT|access_denied|{msg}. User ko strictly batao ki password galat hai ya nahi diya."
+                        try:
+                            target_level = int(target_level)
+                            success, auth_msg = auth.set_level(target_level, password)
+                            if success:
+                                msg = f"SYSTEM_RESULT|security_update|{auth_msg}. CRITICAL RULE: Apne response mein KABHI BHI password repeat mat karna!"
+                            else:
+                                msg = f"SYSTEM_RESULT|access_denied|{auth_msg}. CRITICAL RULE: Apne response mein KABHI BHI password repeat mat karna!"
+                        except ValueError:
+                            success, msg = False, "Invalid level number."
+
             else:
                 # ── Default single-arg action ──
                 query = params.get("query", user_message)
@@ -223,8 +259,15 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                 overall_success = False
                 
             # Separate special agent.py triggers from regular text results
-            if msg.startswith("WEB_RESULT") or msg.startswith("WHATSAPP_") or msg.startswith("CONFIRM_"):
-                special_result = (success, msg)
+            if msg.startswith("WEB_RESULT") or msg.startswith("WHATSAPP_") or msg.startswith("CONFIRM_") or msg.startswith("SYSTEM_RESULT"):
+                # Agar multi-command hai, toh dono SYSTEM instructions ko merge kar do
+                if special_result and "SYSTEM_RESULT" in special_result[1] and "SYSTEM_RESULT" in msg:
+                    old_instruction = special_result[1].split("|")[-1]
+                    new_instruction = msg.split("|")[-1]
+                    merged_msg = f"SYSTEM_RESULT|security_update|{old_instruction} AUR SATH HI {new_instruction}"
+                    special_result = (success, merged_msg)
+                else:
+                    special_result = (success, msg)
             else:
                 regular_results.append(msg)
                 

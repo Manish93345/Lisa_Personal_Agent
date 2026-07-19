@@ -22,6 +22,7 @@ from actions.whatsapp_actions import (
     whatsapp_check_unread, whatsapp_read_messages,
 )
 from actions.web_actions import web_search
+from core.security import auth
 
 MIN_CONFIDENCE = 0.75
 
@@ -102,7 +103,7 @@ def _extract_play_query(user_message: str) -> str:
 
 def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
     intents = detect_intent(user_message)
-    
+
     # Backward compatibility: agar dict return hua toh list mein wrap karo
     if isinstance(intents, dict):
         intents = [intents]
@@ -123,23 +124,38 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
     for intent in valid_intents:
         action = intent.get("action")
         params = intent.get("params", {})
+        
+        # ── SECURITY GATEKEEPER ── (Sahi Jagah)
+        if not auth.is_action_allowed(action):
+            print(f"  [Security] Blocked unauthorized attempt to use: {action}")
+            # Lisa ko context denge ki action block hua hai
+            return False, (
+                f"SYSTEM_RESULT|access_denied|"
+                f"Security Level {auth.current_level} active hai. "
+                f"Bolo ki aapko ye permission nahi hai aur Security Level 0 ke liye sahi administrative password chahiye. (WARNING: Kabhi bhi actual password ka naam mat bolna)."
+            )
+
         action_fn = ACTION_MAP.get(action)
         
-        if not action_fn:
+        if not action_fn and action not in ["find_file", "change_security_level"]:
             continue
             
         print(f"[Router] Executing chained action: {action}")
         
         try:
             # ── Special param handling ──
-            if action in SPECIAL_PARAM_ACTIONS:
+            if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level"]:
+                
+                # === NAYA FILE SEARCH ACTION ===
                 if action == "find_file":
-                    success, msg = action_fn(
-                        query          = user_message,
-                        folder         = params.get("folder", ""),
-                        file           = params.get("file", ""),
-                        on_main_screen = params.get("main_screen", False),
-                    )
+                    file_query = params.get("file", "")
+                    if not file_query:
+                        return False, "File ka naam nahi bataya."
+                        
+                    from actions.file_actions import search_local_file
+                    special_result = search_local_file(file_query)
+                    return special_result # Seedha return karo
+                    
                 elif action == "whatsapp_message":
                     success, msg = action_fn(
                         contact = params.get("contact", ""),
@@ -168,23 +184,36 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                         search_type = params.get("type", "search"),
                         city        = params.get("city", ""),
                     )
-
-                # === FILE SEARCH ACTION ===
-                elif action == "find_file":
-                    # Intent detector ne jo file ka naam pakda hai
-                    file_query = params.get("file", "")
-                    if not file_query:
-                        return False, "File ka naam nahi bataya."
-                        
-                    from actions.file_actions import search_local_file
-                    return search_local_file(file_query)
-                    
-                    
                 elif action in ("play_youtube", "search_youtube"):
                     q = params.get("query", "").strip()
                     if not q:
-                        q = _extract_play_query(user_message)
+                        # Ensure _extract_play_query exists or is imported
+                        # q = _extract_play_query(user_message) 
+                        q = user_message 
                     success, msg = action_fn(q)
+
+                # === SECURITY LEVEL SWITCH ACTION ===
+                elif action == "change_security_level":
+                    target_level = params.get("level")
+                    password = params.get("password")
+                    
+                    if target_level is None:
+                        return False, "Level number nahi bataya."
+                    
+                    # Convert target_level to int safely
+                    try:
+                        target_level = int(target_level)
+                    except ValueError:
+                        return False, "Invalid level number."
+                        
+                    # auth humne pehle hi import kar rakha hai
+                    success, msg = auth.set_level(target_level, password)
+                    
+                    # Lisa ko natural response dene ke liye context
+                    if success:
+                        return True, f"SYSTEM_RESULT|security_update|{msg}. User ko confirm karo ki level change ho gaya hai."
+                    else:
+                        return False, f"SYSTEM_RESULT|access_denied|{msg}. User ko strictly batao ki password galat hai ya nahi diya."
             else:
                 # ── Default single-arg action ──
                 query = params.get("query", user_message)
@@ -205,11 +234,9 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
             regular_results.append(f"{action} failed")
 
     # ── Aggregation & Return Logic ──
-    # If there is a special flow (WhatsApp confirm/Read/Web), return it so agent.py triggers its specific UI logic.
     if special_result:
         return special_result
         
-    # Otherwise, join all standard results into one big context string
     if regular_results:
         combined_msg = " | ".join(regular_results)
         return (overall_success, combined_msg)

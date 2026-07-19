@@ -1,6 +1,16 @@
 ## Things to make more perfect
 - Hindi voice lisa ka with proper emotions and intentions. 
 - file finder abhi bas file ko dhudh ke open kar rha hai but she should be capable of searching the whole folders also or should give all the matching results. 
+- bloked actions ko system tray se modify karna, means ki admin dasboard se .
+- Lisa should continue conversastion from where we last left off. 
+- password harcoded and only one password for security levels. 
+- chat6 ko embedd karna hai
+- ek different memory manager just like rag jo ki kisi bugs ke main cause, failed attempts and successful attempts ko track karke usko vector db mein store kare with confidence taki next time se agar koi aisa bug mile toh wo past experience se usko handle kar sake with minimum failed attempts. 
+- Agent Memory Systems (short-term, long-term, episodic, semantic memory)
+    Reflection / Self-Reflection in AI Agents
+    Experience Replay & Case-Based Reasoning
+    Workflow Learning / User Modeling
+    Hierarchical Multi-Agent Systems
 - 
 
 
@@ -16,7 +26,7 @@ Phase 1: Smart System Mapping (Offline File Intelligence)
 
     Safe Pruning: Scan ke dauran system hang na ho, isliye hum file monitoring logic ko carefully modify karenge taaki wo large directories jaise node_modules aur .git ko hamesha prune (skip) kar de. Isse scanner lightning-fast rahega.
 
-Phase 2: The Authorization Protocol (Security Levels)
+Phase 2: The Authorization Protocol (Security Levels)  DONE ✅
     Ye tumhare 3 cases ko handle karega. Hum ek SecurityManager class banayenge jo LISA ki state control karegi.
 
     Level 0 (God Mode): Tumhara default mode. Har cheez ka full access, read/write/delete permission.

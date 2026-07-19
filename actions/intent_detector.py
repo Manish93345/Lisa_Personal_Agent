@@ -63,6 +63,19 @@ def _romanize(text: str) -> str:
 # ── FAST PATH: Regex patterns (NO LLM CALL) ─────────────────────────────
 
 FAST_PATTERNS = [
+
+    # ─────────── Security Level (Highest Priority) ───────────
+    (r"\b(?:security\s*)?(?:level|mode)\s*([012])\b",
+     lambda m: {
+         "action": "change_security_level",
+         "params": {
+             "level": int(m.group(1)),
+             "password": (re.search(r'password[^\w]+(?:hai[^\w]+)?(\w+)', m.string).group(1) 
+                          if re.search(r'password[^\w]+(?:hai[^\w]+)?(\w+)', m.string) else None)
+         },
+         "confidence": 1.0
+     }),
+
     # ─────────── WhatsApp ───────────
     (r"\b(whatsapp|wp)\b.*\b(check|dekho|naya|unread|message aa(?:ya|e))\b",
      lambda m: {"action": "whatsapp_unread", "params": {}, "confidence": 0.95}),
@@ -163,6 +176,7 @@ ACTION_KEYWORDS = {
     # Removed: "kya hai" (two-word phrase, doesn't match single-word set anyway)
     # file search ke liye
     "dhundh", "search", "kahan", "kaha", "file", "document", "resume", "folder",
+    "activate", "shift", "level", "security", "mode", "lockdown", "password",
 }
 
 
@@ -197,22 +211,29 @@ def _fast_detect(message: str):
 
 # ── Slim LLM prompt — sirf jab regex fail kare ──────────────────────────
 
-INTENT_SYSTEM_PROMPT = """Tum intent detector ho. JSON return karo:
-{"action": "...", "params": {...}, "confidence": 0.0-1.0}
+INTENT_SYSTEM_PROMPT = """Tum ek strict AI intent detector ho. Output HAMESHA valid JSON ARRAY hona chahiye.
 
 Actions: open_website, play_youtube, search_youtube, open_app, search_google,
 find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
-web_search, system_command, none
+web_search, system_command, change_security_level, none
 
 CRITICAL RULES (HAMESHA FOLLOW KARO):
-1. FILE SEARCH: Agar user bole "dhundh", "search", "kaha hai", "kaha rakhe hain" kisi document/file ke liye → action MUST be "find_file". (Example params: {"file": "LancerTech"})
-2. NO FAKE WHATSAPP: "wifey ji", "baby", "jaan" ye sab AI ke liye pyaar wale words hain. Inko WhatsApp contact samajh kar message MAT bhejna!
-3. WHATSAPP SIRF TAB: Jab user explicitly bole "X ko message bhejo" ya "X ko bol do".
-4. PERSONAL CHAT: Agar action samajh na aaye, toh "none" return karo.
+1. FILE SEARCH: Agar "dhundh", "search", "kaha hai" aaye -> "find_file"
+2. NO FAKE WHATSAPP: "wifey", "baby", "jaan" contacts nahi hain. Inko message mat bhejna.
+3. SECURITY LEVEL: Agar user bole "Level X activate karo", "Level X par aao" ya "security shift karo", toh action HAMESHA "change_security_level" hoga. Chahe sentence mein kitni bhi flirting kyu na ho, COMMAND IGNORE NAHI HONI CHAHIYE. 
 
-ALWAYS return a JSON ARRAY of objects:
-[ {"action": "...", "params": {...}, "confidence": 0.9} ]
-SIRF JSON ARRAY return karo."""
+EXAMPLES (INHE STRICTLY FOLLOW KARO):
+
+User: "jaan suniye n baby, security level 1 activate kar do n jaan"
+Output: [{"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}]
+
+User: "wapas level 0 par shift kar do baby password hai Lisajaanu"
+Output: [{"action": "change_security_level", "params": {"level": 0, "password": "Lisajaanu"}, "confidence": 0.99}]
+
+User: "mera 6th sem ka result aa gaya"
+Output: [{"action": "none", "params": {}, "confidence": 0.99}]
+
+SIRF JSON ARRAY RETURN KARO."""
 
 
 def _llm_intent(message: str, tier: str = "local") -> dict | None:

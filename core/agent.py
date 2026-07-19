@@ -901,6 +901,28 @@ OUTPUT STRICTLY IN JSON FORMAT:
                 tracer.turn_end(reply)
                 return reply
 
+            # ── Security Blocked Result ──
+            if action_msg.startswith("SYSTEM_RESULT|access_denied|"):
+                instruction = action_msg.split("|")[2]
+                augmented = f"{user_message}\n\n[System: {instruction}. CRITICAL RULE: Apne response mein KABHI BHI actual password repeat mat karna!]"
+                
+                reply = self._llm_call(system_prompt, self.conversation_history, augmented, tier="premium")
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": _strip_audio_tags_agent(reply)})
+                self._trim_history()
+                return reply
+                
+            # ── Security Success Result ──
+            if action_msg.startswith("SYSTEM_RESULT|security_update|"):
+                instruction = action_msg.split("|")[2]
+                augmented = f"{user_message}\n\n[System: {instruction}. CRITICAL RULE: Apne response mein KABHI BHI actual password repeat mat karna!]"
+                
+                reply = self._llm_call(system_prompt, self.conversation_history, augmented, tier="premium")
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": _strip_audio_tags_agent(reply)})
+                self._trim_history()
+                return reply
+
             # ── Local File Search Result ──
             if action_msg.startswith("SYSTEM_RESULT|find_file|"):
                 data = action_msg.split("|")[2]

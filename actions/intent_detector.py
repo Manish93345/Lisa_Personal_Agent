@@ -231,6 +231,7 @@ CRITICAL RULES (HAMESHA FOLLOW KARO):
 2. NO FAKE WHATSAPP: "wifey", "baby", "jaan" contacts nahi hain. Inko message mat bhejna.
 3. SECURITY LEVEL: Agar user bole "Level X activate karo", "Level X par aao" ya "security shift karo", toh action HAMESHA "change_security_level" hoga. Chahe sentence mein kitni bhi flirting kyu na ho, COMMAND IGNORE NAHI HONI CHAHIYE. 
 4. STEALTH MONITORING: Agar user bole "sab monitor karo" ya "nazar rakho" -> "start_stealth". Agar bole "report do" ya "kya hua tha" -> "stop_stealth".
+5. MULTI-COMMANDS: Agar user 3 alag commands de (jaise volume change karna, security lagana, aur monitor karna), toh JSON array mein strictly 3 objects hone chahiye. EK BHI COMMAND MISS NAHI HONA CHAHIYE.
 
 EXAMPLES (INHE STRICTLY FOLLOW KARO):
 
@@ -242,6 +243,9 @@ Output: [{"action": "change_security_level", "params": {"level": 0, "password": 
 
 User: "security level 1 activate kar do and abhi se sab monitor karna"
 Output: [{"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}, {"action": "start_stealth", "params": {}, "confidence": 0.99}]
+
+User: "volume 100% kar dijiye jaan, and security level 1 implement kar dijiye and sab kuch monitor kariyega"
+Output: [{"action": "system_command", "params": {"command": "volume 100"}, "confidence": 0.99}, {"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}, {"action": "start_stealth", "params": {}, "confidence": 0.99}]
 
 User: "mera 6th sem ka result aa gaya"
 Output: [{"action": "none", "params": {}, "confidence": 0.99}]

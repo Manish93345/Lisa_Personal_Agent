@@ -1,39 +1,35 @@
 """
-LISA — Internal Trace Logger
-=============================
-Lightweight, dependency-free tracer for per-turn visibility:
-  - Which module did what
-  - How long it took
-  - How many tokens it cost
-  - Which LLM provider responded
+LISA — Internal Trace Logger (v2 — dashboard-ready)
+====================================================
+Same terminal output as before, PLUS:
+  - Ring-buffer of last N events (in-memory, thread-safe)
+  - Subscriber queues for live streaming (SSE / websocket)
+  - JSON-serializable event dicts
 
-Usage:
-    from core.tracer import tracer
-
-    tracer.turn_start("meri cutie wifey ji")
-    tracer.log("Mood",   "flirty (matched: 'jaan', 'kissi')")
-    with tracer.timed("Intent", "local qwen2.5:3b"):
-        result = call_intent(...)
-    tracer.log("Memory", "Retrieved 2 core + 0 keyword-matched", tokens=180)
-    tracer.log("LLM ✓", "cerebras gpt-oss-120b", duration_ms=1400, tokens_in=850, tokens_out=67)
-    tracer.turn_end()
+Backward-compat: `tracer.log(...)`, `tracer.timed(...)`, `tracer.turn_start(...)`
+signatures unchanged — existing call sites keep working.
 
 ENV:
-  LISA_TRACE=1     → enable full trace (default off)
-  LISA_TRACE=2     → also print system_prompt length & token counts
+  LISA_TRACE=1     → enable full trace (default on)
+  LISA_TRACE=2     → verbose
+  LISA_TRACE_BUFFER=500  → ring buffer size (default 500 events)
 """
 
 import os
 import time
 import sys
+import queue
+import threading
+from collections import deque
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 
 # ── Config ──────────────────────────────────────────────────────────────
-TRACE_LEVEL = int(os.getenv("LISA_TRACE", "1"))   # 0=off, 1=basic, 2=verbose
+TRACE_LEVEL   = int(os.getenv("LISA_TRACE", "1"))
+BUFFER_SIZE   = int(os.getenv("LISA_TRACE_BUFFER", "500"))
 
-# ANSI color codes (gracefully degrade on Windows cmd)
+
 class _C:
     DIM    = "\033[2m"
     CYAN   = "\033[36m"
@@ -44,13 +40,11 @@ class _C:
     BOLD   = "\033[1m"
     RESET  = "\033[0m"
 
-# Disable colors on Windows old terminals
 if sys.platform == "win32" and not os.getenv("WT_SESSION"):
     for attr in ["DIM", "CYAN", "GREEN", "YELLOW", "RED", "MAG", "BOLD", "RESET"]:
         setattr(_C, attr, "")
 
 
-# Color map per module name
 _MODULE_COLORS = {
     "Turn":    _C.BOLD + _C.MAG,
     "Mood":    _C.YELLOW,
@@ -72,14 +66,20 @@ _MODULE_COLORS = {
 
 
 class Tracer:
-    """Singleton tracer — one per process."""
+    """Singleton tracer — one per process. Now also broadcasts to dashboard."""
 
     def __init__(self):
-        self.turn_no = 0
-        self._turn_t0 = None
-        self._enabled = TRACE_LEVEL > 0
+        self.turn_no    = 0
+        self._turn_t0   = None
+        self._enabled   = TRACE_LEVEL > 0
 
-    # ── Public ─────────────────────────────────────────────────────────
+        # Dashboard hooks
+        self._buffer: deque = deque(maxlen=BUFFER_SIZE)   # ring buffer of events
+        self._subscribers: List[queue.Queue] = []          # live listeners (SSE)
+        self._lock = threading.Lock()
+        self._seq  = 0
+
+    # ── Public API (unchanged signatures) ──────────────────────────────
 
     def enable(self, level: int = 1):
         self._enabled = level > 0
@@ -99,6 +99,11 @@ class Tracer:
             f"\n{_C.BOLD}{_C.MAG}╭─ Turn #{self.turn_no}{_C.RESET} "
             f"{_C.DIM}│{_C.RESET} {preview}"
         )
+        self._emit({
+            "type":    "turn_start",
+            "turn_no": self.turn_no,
+            "message": preview,
+        })
 
     def turn_end(self, reply: Optional[str] = None):
         if not self._enabled or self._turn_t0 is None:
@@ -109,6 +114,12 @@ class Tracer:
             f"{_C.BOLD}{_C.MAG}╰─ Turn #{self.turn_no} done{_C.RESET} "
             f"{_C.DIM}({elapsed_ms:.0f}ms{suffix}){_C.RESET}\n"
         )
+        self._emit({
+            "type":        "turn_end",
+            "turn_no":     self.turn_no,
+            "duration_ms": round(elapsed_ms, 1),
+            "reply_chars": len(reply) if reply else 0,
+        })
         self._turn_t0 = None
 
     def log(
@@ -120,7 +131,6 @@ class Tracer:
         tokens_in: Optional[int] = None,
         tokens_out: Optional[int] = None,
     ):
-        """Log a single trace line."""
         if not self._enabled:
             return
 
@@ -143,14 +153,19 @@ class Tracer:
 
         print(f"│  {tag} {message}{extras_str}")
 
+        self._emit({
+            "type":        "log",
+            "module":      module,
+            "message":     message,
+            "duration_ms": round(duration_ms, 1) if duration_ms is not None else None,
+            "tokens":      tokens,
+            "tokens_in":   tokens_in,
+            "tokens_out":  tokens_out,
+            "turn_no":     self.turn_no,
+        })
+
     @contextmanager
     def timed(self, module: str, message: str):
-        """
-        Context manager for auto-timing.
-
-            with tracer.timed("Intent", "local qwen2.5:3b"):
-                result = do_work()
-        """
         if not self._enabled:
             yield
             return
@@ -162,20 +177,63 @@ class Tracer:
             self.log(module, message, duration_ms=elapsed)
 
     def info(self, msg: str):
-        """Plain info line (no module bracket)."""
         if not self._enabled:
             return
         print(f"│  {_C.DIM}{msg}{_C.RESET}")
+        self._emit({"type": "info", "message": msg, "turn_no": self.turn_no})
 
     def warn(self, msg: str):
         if not self._enabled:
             return
         print(f"│  {_C.YELLOW}⚠ {msg}{_C.RESET}")
+        self._emit({"type": "warn", "message": msg, "turn_no": self.turn_no})
 
     def error(self, msg: str):
         if not self._enabled:
             return
         print(f"│  {_C.RED}✗ {msg}{_C.RESET}")
+        self._emit({"type": "error", "message": msg, "turn_no": self.turn_no})
+
+    # ── Dashboard helpers ──────────────────────────────────────────────
+
+    def _emit(self, event: Dict[str, Any]) -> None:
+        """Push event into ring-buffer + fan out to live subscribers."""
+        with self._lock:
+            self._seq += 1
+            event["seq"] = self._seq
+            event["ts"]  = time.time()
+            self._buffer.append(event)
+            # non-blocking fanout — slow subscribers just drop
+            dead = []
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(event)
+                except queue.Full:
+                    dead.append(q)
+            for q in dead:
+                try:
+                    self._subscribers.remove(q)
+                except ValueError:
+                    pass
+
+    def snapshot(self, since_seq: int = 0, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return buffered events with seq > since_seq (most recent last)."""
+        with self._lock:
+            events = [e for e in self._buffer if e.get("seq", 0) > since_seq]
+        return events[-limit:]
+
+    def subscribe(self, maxsize: int = 200) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=maxsize)
+        with self._lock:
+            self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            try:
+                self._subscribers.remove(q)
+            except ValueError:
+                pass
 
 
 # ── Singleton instance ──────────────────────────────────────────────────

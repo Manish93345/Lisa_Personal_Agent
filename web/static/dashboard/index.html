@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>LISA // Core Interface</title>
+  <link rel="stylesheet" href="/static/dashboard/dashboard.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='none' stroke='%2300e5ff' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='20' fill='%2300e5ff'/%3E%3C/svg%3E">
+
+  <!-- Three.js CDN — used by orb.js -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+</head>
+<body>
+
+  <!-- Animated background grid -->
+  <div class="grid-bg"></div>
+  <div class="scanlines"></div>
+  <div class="vignette"></div>
+
+  <div class="hud">
+
+    <!-- ═════════════════ TOP BAR ═════════════════ -->
+    <header class="top-bar">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div class="brand-text">
+          <div class="brand-title">L·I·S·A</div>
+          <div class="brand-sub" id="brandSub">CORE INTERFACE // v3.0</div>
+        </div>
+      </div>
+
+      <div class="top-status">
+        <div class="stat-chip" id="chipMode">
+          <div class="chip-label">MODE</div>
+          <div class="chip-value" id="modeValue">—</div>
+        </div>
+        <div class="stat-chip" id="chipMood">
+          <div class="chip-label">MOOD</div>
+          <div class="chip-value" id="moodValue">—</div>
+        </div>
+        <div class="stat-chip" id="chipSec">
+          <div class="chip-label">SECURITY</div>
+          <div class="chip-value" id="secLevelValue">—</div>
+        </div>
+        <div class="stat-chip" id="chipWatch">
+          <div class="chip-label">MONITOR</div>
+          <div class="chip-value" id="watchValue">OFF</div>
+        </div>
+        <div class="stat-chip" id="chipTurns">
+          <div class="chip-label">TURNS</div>
+          <div class="chip-value" id="turnValue">0</div>
+        </div>
+        <div class="stat-chip" id="chipTokens">
+          <div class="chip-label">TOKENS · TODAY</div>
+          <div class="chip-value" id="tokenValue">0</div>
+        </div>
+
+        <a class="btn-chat" href="/chat" title="Open chat interface">
+          <span>💬</span> CHAT
+        </a>
+      </div>
+    </header>
+
+    <!-- ═════════════════ MAIN GRID ═════════════════ -->
+    <main class="grid">
+
+      <!-- LEFT COLUMN — Trace feed -->
+      <section class="panel panel-trace">
+        <div class="panel-head">
+          <div class="panel-title"><span class="dot"></span> LIVE TRACE</div>
+          <div class="panel-actions">
+            <span class="tag" id="traceStreamTag">SSE •</span>
+            <button class="mini-btn" id="traceClearBtn">CLEAR</button>
+            <button class="mini-btn" id="tracePauseBtn">PAUSE</button>
+          </div>
+        </div>
+        <div class="trace-list" id="traceList"></div>
+      </section>
+
+      <!-- CENTER COLUMN — Orb + Mic + Reply -->
+      <section class="panel panel-orb">
+        <div class="orb-wrap">
+          <div class="orb-rings">
+            <div class="ring ring-1"></div>
+            <div class="ring ring-2"></div>
+            <div class="ring ring-3"></div>
+          </div>
+          <canvas id="orbCanvas"></canvas>
+          <div class="orb-label" id="orbLabel">IDLE</div>
+        </div>
+
+        <div class="voice-console">
+          <div class="voice-transcript" id="transcriptBox">
+            <div class="tx-line tx-hint">🎤 Click the mic to talk to Lisa. She'll transcribe, reply and speak back — same as the chat page.</div>
+          </div>
+
+          <div class="voice-controls">
+            <button class="mic-btn" id="micBtn" title="Push to talk">
+              <span class="mic-icon">🎙</span>
+              <span class="mic-label" id="micLabel">TAP TO SPEAK</span>
+              <span class="mic-pulse"></span>
+            </button>
+            <div class="quick-inline">
+              <input type="text" id="quickInput" placeholder="…or type here" />
+              <button class="mini-btn" id="quickSend">SEND</button>
+              <label class="chk"><input type="checkbox" id="autoSpeak" checked/> AUTO-SPEAK</label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN — OS Watcher + Security + Memories -->
+      <section class="panel panel-side">
+
+        <!-- OS Watcher card -->
+        <div class="sub-card">
+          <div class="sub-head">
+            <div class="sub-title">👁 OS WATCHER</div>
+            <div class="sub-actions">
+              <button class="mini-btn" id="watchStartBtn">START</button>
+              <button class="mini-btn mini-danger" id="watchStopBtn">STOP</button>
+            </div>
+          </div>
+          <div class="watch-meta">
+            <div><span class="k">Now:</span> <span class="v" id="watchNow">—</span></div>
+            <div><span class="k">Dwell:</span> <span class="v" id="watchDwell">—</span></div>
+            <div><span class="k">Windows seen:</span> <span class="v" id="watchCount">0</span></div>
+          </div>
+          <div class="timeline" id="watchTimeline"></div>
+        </div>
+
+        <!-- Security card -->
+        <div class="sub-card">
+          <div class="sub-head">
+            <div class="sub-title">🛡 SECURITY PROTOCOL</div>
+          </div>
+
+          <div class="sec-levels">
+            <button class="sec-btn" data-level="0">L0 · GOD</button>
+            <button class="sec-btn" data-level="1">L1 · FAMILY</button>
+            <button class="sec-btn" data-level="2">L2 · LOCKDOWN</button>
+          </div>
+          <div class="sec-info" id="secInfo">—</div>
+
+          <div class="pw-block">
+            <div class="pw-title">CHANGE PASSWORD <span class="pw-note">(memory-only · until restart)</span></div>
+            <input type="password" id="pwOld" placeholder="current password" />
+            <input type="password" id="pwNew" placeholder="new password (min 4 chars)" />
+            <button class="mini-btn" id="pwChangeBtn">ROTATE</button>
+            <div class="pw-msg" id="pwMsg"></div>
+          </div>
+        </div>
+
+        <!-- Memory card -->
+        <div class="sub-card">
+          <div class="sub-head">
+            <div class="sub-title">🧠 MEMORY BANK</div>
+            <div class="sub-actions">
+              <button class="mini-btn" id="memRefreshBtn">REFRESH</button>
+            </div>
+          </div>
+          <div class="mem-list" id="memList"></div>
+        </div>
+
+        <!-- Tokens card -->
+        <div class="sub-card">
+          <div class="sub-head">
+            <div class="sub-title">⚡ TOKEN USAGE · TODAY</div>
+            <div class="sub-actions">
+              <button class="mini-btn" id="resetVoiceBtn">RESET VOICE</button>
+            </div>
+          </div>
+          <div class="token-grid" id="tokenGrid"></div>
+          <div class="voice-chars" id="voiceChars"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="sub-card">
+          <div class="sub-head">
+            <div class="sub-title">⚙ CONTROLS</div>
+          </div>
+          <div class="actions-row">
+            <button class="mini-btn" id="modeToggleBtn">SWITCH MODE</button>
+            <button class="mini-btn mini-danger" id="resetChatBtn">RESET CHAT</button>
+          </div>
+        </div>
+
+      </section>
+    </main>
+
+    <!-- Footer status ticker -->
+    <footer class="footer">
+      <div class="ticker" id="ticker">SYSTEM ONLINE · Awaiting operator…</div>
+      <div class="clock" id="clock">--:--:--</div>
+    </footer>
+  </div>
+
+  <!-- Audio element used for TTS playback (auto-play) -->
+  <audio id="ttsAudio" hidden></audio>
+
+  <script src="/static/dashboard/orb.js"></script>
+  <script src="/static/dashboard/dashboard.js"></script>
+</body>
+</html>

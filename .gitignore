@@ -18,3 +18,8 @@ data/whatsapp_profile
 /docs/plans
 LISA_ROADMAP.html
 cartesia_voice.py 
+/voice/model 
+temp_command.wav 
+temp_reply.mp3 
+temp_reply.wav 
+/actions/archieve

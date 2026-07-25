@@ -48,7 +48,7 @@ USER_NAME  = "Manish"
 # ── Modes ──────────────────────────────────────────────────────────────
 MODE_PERSONAL     = "personal"
 MODE_PROFESSIONAL = "professional"
-DEFAULT_MODE      = MODE_PERSONAL
+DEFAULT_MODE      = MODE_PROFESSIONAL
 
 # ── Voice Settings ─────────────────────────────────────────────────────
 WHISPER_MODEL_SIZE = "medium"

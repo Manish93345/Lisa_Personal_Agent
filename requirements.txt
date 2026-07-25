@@ -36,3 +36,6 @@ requests
 # pip install sentence-transformers
 # pip install ai4bharat-transliteration
 watchdog
+pip install pvporcupine pyaudio
+pip install vosk pyaudio
+pip install requests pygame

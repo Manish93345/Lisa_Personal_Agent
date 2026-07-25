@@ -101,6 +101,9 @@ def _save_avatar_config(cfg: dict) -> None:
     AVATAR_CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+from core.floating_ui import start_floating_dot
+from voice.wake_word import run_wake_word_background
+
 # ── FastAPI app + lifespan ────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,7 +124,21 @@ async def lifespan(app: FastAPI):
         print("  [Startup] Embedding model ready ✓")
     except Exception as e:
         print(f"  [Startup] Embedding model skipped: {e}")
+        
+    # ── START THE WAKE WORD & FLOATING DOT ──
+    # ── START THE WAKE WORD & FLOATING DOT ──
+    print("  [Startup] Launching Floating UI and Wake Word Engine...")
+    
+    get_agent().mode = "professional"  # <--- YE LINE ZAROOR ADD KARNA
+    
+    start_floating_dot()
+    run_wake_word_background()
+    
     print(f"  [Startup] Server ready\n")
+
+    # 🚨 Naya code: Lisa ke uthte hi file indexing background mein start kar do
+    # from actions.file_finder import run_indexer_background
+    # run_indexer_background()
 
     yield
     try:
@@ -281,7 +298,7 @@ async def voice(audio: UploadFile = File(...)):
         with open(tmp_path, "rb") as f:
             result = client.audio.transcriptions.create(
                 file            = f,
-                model           = "whisper-large-v3-turbo",
+                model           = "whisper-large-v3",
                 prompt          = HINGLISH_PROMPT,
                 response_format = "text",
                 temperature     = 0.0,
@@ -292,6 +309,13 @@ async def voice(audio: UploadFile = File(...)):
         from voice.stt import _normalize_output
         text = _normalize_output(raw)
 
+        # 🚨 INSTANT DEVANAGARI KILLER (Fixes UI & Logs) 🚨
+        import re
+        if re.search(r'[\u0900-\u097F]', text):
+            from core.agent import _to_roman_shadow
+            text = _to_roman_shadow(text)
+            if text: text = text[0].upper() + text[1:] # Capitalize first letter
+
         try: os.unlink(tmp_path)
         except Exception: pass
 
@@ -300,14 +324,19 @@ async def voice(audio: UploadFile = File(...)):
 
         agent = get_agent()
         agent.voice_mode = True
+        
         loop  = asyncio.get_event_loop()
         reply = await loop.run_in_executor(None, agent.chat, text)
 
         from voice.tts import _strip_audio_tags
+        
+        # 🚨 BULLETPROOF TAG REMOVAL FOR UI 🚨
+        clean_reply = re.sub(r'\[TTS_FORCE_[A-Z]+\]', '', reply).strip()
+        
         return {
             "transcript":   text,
-            "reply":        _strip_audio_tags(reply),
-            "tts_text":     reply,
+            "reply":        _strip_audio_tags(clean_reply),
+            "tts_text":     reply,  # Tag intact for /api/tts routing
             "mode":         agent.get_mode(),
             "mood":         agent.get_mood(),
             "turn_count":   agent.turn_count,
@@ -327,14 +356,25 @@ async def tts(req: TTSRequest):
 
     from voice.tts import (
         _elevenlabs_tts, _sarvam_tts, _edge_tts, _gtts,
-        _clean_text, _strip_audio_tags,
-        TEMP_WAV, TEMP_MP3, TTS_PROVIDER,
-        EDGE_VOICE,
+        _clean_text, _strip_audio_tags, TEMP_WAV, TEMP_MP3
     )
     import voice.tts as tts_mod
+    import re
 
-    tagged_text = _clean_text(req.text, keep_devanagari=True, keep_audio_tags=True)
+    # 1. DETECT AND STRIP FORCE TAGS
+    force_mode = None
+    if "[TTS_FORCE_PROFESSIONAL]" in req.text:
+        force_mode = "professional"
+    elif "[TTS_FORCE_PERSONAL]" in req.text:
+        force_mode = "personal"
+
+    # Completely remove the tag so voice engine doesn't speak it
+    clean_req_text = re.sub(r'\[TTS_FORCE_[A-Z]+\]', '', req.text).strip()
+
+    # 2. PREPARE TEXT
+    tagged_text = _clean_text(clean_req_text, keep_devanagari=True, keep_audio_tags=True)
     plain_text  = _strip_audio_tags(tagged_text)
+
     if not plain_text:
         raise HTTPException(400, "Nothing to speak after cleanup")
 
@@ -346,26 +386,32 @@ async def tts(req: TTSRequest):
     edge_step   = ("edge",       _edge_tts,      plain_text,  TEMP_MP3, "audio/mpeg")
     gtts_step   = ("gtts",       _gtts,          plain_text,  TEMP_MP3, "audio/mpeg")
 
-    current_mode = "personal"
-    try:
-        current_mode = get_agent().get_mode()
-    except Exception:
-        pass
+    # 3. DETERMINE CURRENT MODE
+    current_mode = force_mode
+    if not current_mode:
+        try:
+            current_mode = get_agent().get_mode()
+        except Exception:
+            current_mode = "professional"
 
+    # 4. BUILD ROUTING CHAIN
     if current_mode == "professional":
-        tts_mod.TTS_PROVIDER = "edge"
         tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE_PROFESSIONAL", "en-US-AnaNeural")
         chain = [edge_step, gtts_step]
     else:
         tts_mod.EDGE_VOICE = os.getenv("EDGE_VOICE", "hi-IN-SwaraNeural")
-        chains = {
-            "sarvam":     [sarvam_step, edge_step, gtts_step],
-            "elevenlabs": [el_step, sarvam_step, edge_step, gtts_step],
-            "edge":       [edge_step, gtts_step],
-            "gtts":       [gtts_step, edge_step],
-        }
-        chain = chains.get(TTS_PROVIDER, chains.get("edge", [edge_step, gtts_step]))
+        active_provider = os.getenv("TTS_PROVIDER", "sarvam").lower()
+        
+        if active_provider == "sarvam":
+            chain = [sarvam_step, edge_step, gtts_step]
+        elif active_provider == "elevenlabs":
+            chain = [el_step, sarvam_step, edge_step, gtts_step]
+        elif active_provider == "edge":
+            chain = [edge_step, gtts_step]
+        else:
+            chain = [gtts_step, edge_step]
 
+    # 5. EXECUTE CHAIN
     try:
         for label, fn, payload, out_path, mime in chain:
             try:
@@ -384,21 +430,12 @@ async def tts(req: TTSRequest):
                         )
             except Exception as e:
                 print(f"  [TTS][{label}] {e}")
-        last_err = None
-        if _el_keys is not None:
-            try: last_err = _el_keys.get_last_error()
-            except Exception: last_err = None
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error":      "all_tts_providers_failed",
-                "last_error": last_err,
-                "hint":       "ElevenLabs free-tier blocks VPN/proxy IPs.",
-            },
-        )
+        
+        raise HTTPException(status_code=503, detail={"error": "all_tts_providers_failed"})
     finally:
         tts_mod._play_file = original_play
 
+        
 
 # ── Token usage / state / mode / reset / memories / history / avatars ─
 @app.get("/api/token_usage")

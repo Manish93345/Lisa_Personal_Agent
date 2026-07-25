@@ -162,6 +162,7 @@ CHITCHAT_PATTERNS = [
 # Return "none" immediately — zero LLM call, zero latency.
 # This prevents messages like "hello meri pyari si cute si wife, kaisi ho baby"
 # from falling through to a 7-second cloud intent call.
+# ── ACTION_KEYWORDS fast-rejection set ──────────────────────────────────
 ACTION_KEYWORDS = {
     # WhatsApp
     "whatsapp", "wp", "message", "msg", "bhej", "bhejo", "bol", "bolo",
@@ -176,15 +177,13 @@ ACTION_KEYWORDS = {
     # Media
     "youtube", "yt", "play", "chala", "baja", "song", "gaana", "music",
     "video", "movie",
-    # Web / Info — only keep clear action-intent words, not conversational ones
-    "weather", "mausam", "news", "khabar", "google",
-    "wikipedia",
-    # Removed: "batao" (too conversational — "batao kya hua" is NOT an action)
-    # Removed: "kya hai" (two-word phrase, doesn't match single-word set anyway)
-    # file search ke liye
-    "dhundh", "search", "kahan", "kaha", "file", "document", "resume", "folder",
+    # Web / Info / Knowledge (🚨 NAYE WORDS ADD KIYE)
+    "weather", "mausam", "news", "khabar", "google", "wikipedia",
+    "flight", "ticket", "price", "score", "match", "kab", "kyun", "kaise",
+    "batao", "info", "knowledge", "kya", "kaun",
+    # File/Security
+    "dhundh", "kahan", "kaha", "document", "resume",
     "activate", "shift", "level", "security", "mode", "lockdown", "password",
-    # ACTION_KEYWORDS mein ye words add karo:
     "monitor", "stealth", "nigraani", "report", "peeche", "nazar",
 }
 
@@ -227,22 +226,20 @@ find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
 web_search, system_command, change_security_level, start_stealth, stop_stealth, none
 
 CRITICAL RULES (HAMESHA FOLLOW KARO):
-1. FILE SEARCH: Agar "dhundh", "search", "kaha hai" aaye -> "find_file"
+1. FILE SEARCH: Agar "dhundh", "search", "kaha hai", "movie", "chala do", "laptop mein" aaye -> "find_file". ZAROORI HAI ki tum exact movie ya file ka naam extract karke "params": {"file": "exact name"} mein bhejo. Poora sentence mat dalna.
 2. NO FAKE WHATSAPP: "wifey", "baby", "jaan" contacts nahi hain. Inko message mat bhejna.
-3. SECURITY LEVEL: Agar user bole "Level X activate karo", "Level X par aao" ya "security shift karo", toh action HAMESHA "change_security_level" hoga. Chahe sentence mein kitni bhi flirting kyu na ho, COMMAND IGNORE NAHI HONI CHAHIYE. 
+3. SECURITY LEVEL: Agar user bole "Level X activate karo", "Level X par aao" ya "security shift karo", toh action HAMESHA "change_security_level" hoga.
 4. STEALTH MONITORING: Agar user bole "sab monitor karo" ya "nazar rakho" -> "start_stealth". Agar bole "report do" ya "kya hua tha" -> "stop_stealth".
-5. MULTI-COMMANDS: Agar user 3 alag commands de (jaise volume change karna, security lagana, aur monitor karna), toh JSON array mein strictly 3 objects hone chahiye. EK BHI COMMAND MISS NAHI HONA CHAHIYE.
+5. MULTI-COMMANDS: Agar user 3 alag commands de, toh JSON array mein strictly 3 objects hone chahiye.
+6. WEB SEARCH & KNOWLEDGE: Agar user flights, ticket prices, live match score, current events, ya koi general knowledge (science, history) puche -> "web_search" (e.g., {"action": "web_search", "params": {"type": "search", "query": "user exact question"}}).
 
 EXAMPLES (INHE STRICTLY FOLLOW KARO):
 
+User: "laptop mein deadpool 2 movie hogi chala dijiye n"
+Output: [{"action": "find_file", "params": {"file": "deadpool 2"}, "confidence": 0.99}]
+
 User: "jaan suniye n baby, security level 1 activate kar do n jaan"
 Output: [{"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}]
-
-User: "wapas level 0 par shift kar do baby password hai Lisajaanu"
-Output: [{"action": "change_security_level", "params": {"level": 0, "password": "Lisajaanu"}, "confidence": 0.99}]
-
-User: "security level 1 activate kar do and abhi se sab monitor karna"
-Output: [{"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}, {"action": "start_stealth", "params": {}, "confidence": 0.99}]
 
 User: "volume 100% kar dijiye jaan, and security level 1 implement kar dijiye and sab kuch monitor kariyega"
 Output: [{"action": "system_command", "params": {"command": "volume 100"}, "confidence": 0.99}, {"action": "change_security_level", "params": {"level": 1, "password": ""}, "confidence": 0.99}, {"action": "start_stealth", "params": {}, "confidence": 0.99}]
@@ -250,14 +247,21 @@ Output: [{"action": "system_command", "params": {"command": "volume 100"}, "conf
 User: "mera 6th sem ka result aa gaya"
 Output: [{"action": "none", "params": {}, "confidence": 0.99}]
 
-SIRF JSON ARRAY RETURN KARO."""
+SIRF JSON ARRAY RETURN KARO.""" 
 
 
 def _llm_intent(message: str, tier: str = "local") -> dict | None:
     """Try LLM-based intent detection at given tier. Return None on failure."""
+    
+    from datetime import datetime
+    current_date = datetime.now().strftime("%B %Y")
+    
+    # 🚨 FIX: Removed date from query strings. Added rule for follow-up checks.
+    dynamic_prompt = INTENT_SYSTEM_PROMPT + f"\n\n[SYSTEM INFO: Aaj ki date '{current_date}' hai. CRITICAL RULES:\n1. Jab user puche 'phir se check karo' ya 'mera matlab hai...', toh usko 'web_search' intent maano aur nayi query generate karo.\n2. Query param mein date (July 2026) MAT ghusao. Bas natural keywords use karo (e.g., 'Delhi student protest latest news').]"
+
     try:
         raw = call_llm_simple(
-            system_prompt = INTENT_SYSTEM_PROMPT,
+            system_prompt = dynamic_prompt,
             user_message  = f"User: {message}",
             temperature   = 0.0,
             max_tokens    = 150,
@@ -268,20 +272,18 @@ def _llm_intent(message: str, tier: str = "local") -> dict | None:
         if not raw or not raw.strip():
             return None
 
-        # Strip markdown fence
         if "```" in raw:
             raw = raw.split("```")[1].lstrip("json").strip()
 
-        # Extract first JSON array
+        import re
         m = re.search(r"\[.*\]", raw, re.DOTALL)
         if m:
             raw = m.group(0)
 
+        import json
         parsed = json.loads(raw)
         
-        # Sanity check: must be a list now
         if not isinstance(parsed, list):
-            # Fallback if the LLM hallucinated a single dict
             if isinstance(parsed, dict) and "action" in parsed:
                 return [parsed]
             return None

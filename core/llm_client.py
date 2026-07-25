@@ -29,7 +29,9 @@ import time
 import json
 from datetime import date
 from pathlib import Path
+from core.llm_keys import key_manager
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
@@ -42,11 +44,9 @@ PROVIDER_PRIORITY = [p.strip() for p in _PRIORITY_ENV.split(",") if p.strip()]
 # ── Model assignments (SINGLE SOURCE OF TRUTH — no hardcoding elsewhere) ──
 # Chat models — for conversation quality
 CLOUD_CHAT_MODELS = {
-    "gemini":      "gemini-2.5-flash",        # Primary — 10 RPM / 250K TPM free
-    "gemini_lite": "gemini-2.5-flash-lite",   # Intent only — 30 RPM / 250K TPM free
-    "groq":        "llama-3.3-70b-versatile", # Fallback — 30 RPM / 6K TPM
-    "cerebras":    "gpt-oss-120b",            # Fallback
-    "claude":      "claude-haiku-4-5-20251001",
+    "gemini":   "gemini-2.5-flash",        # Chat ke liye
+    "groq":     "llama-3.3-70b-versatile", # Groq for Chat Fallback AND Intent
+    "claude":   "claude-haiku-4-5-20251001",
 }
 
 # Local model assignments (Ollama — runs on RTX 3050, zero quota cost)
@@ -58,7 +58,7 @@ LOCAL_MODELS = {
 }
 
 # Intent detection provider priority (Flash-Lite first — it has 3x more RPM)
-INTENT_PROVIDER_PRIORITY = ["gemini_lite", "gemini", "groq", "cerebras"]
+INTENT_PROVIDER_PRIORITY = ["groq", "gemini"]
 
 # ── Token usage tracking ─────────────────────────────────────────────────
 TOKEN_LOG_PATH = Path(__file__).parent.parent / "data" / "token_usage.json"
@@ -101,19 +101,13 @@ def get_response(
     system_prompt: str,
     conversation_history: list,
     user_message: str,
-    temperature: float = 0.85,
-    max_tokens: int = 280,          # Changed from 400 → 280 (Phase 0 token reduction)
-    tier: str = "premium",          # "premium" | "fast" | "intent" | "local"
+    temperature: float = 0.72,
+    max_tokens: int = 280,
+    tier: str = "premium",
     task: str = "default",
 ) -> str:
-    """
-    Main response function — routes to correct model based on tier.
-
-    tier="premium": cloud 70B (Gemini 2.5 Flash primary) — for Lisa's chat replies
-    tier="fast":    same as premium but tries Groq first (lower latency)
-    tier="intent":  Gemini Flash-Lite first (30 RPM free) — for JSON intent extraction
-    tier="local":   Ollama only (completely free, no quota) — for memory/summarization
-    """
+    """Routes to correct model and handles Auto-Rotation of API Keys."""
+    
     if tier == "local":
         return _ollama(
             system_prompt, conversation_history, user_message,
@@ -121,45 +115,40 @@ def get_response(
             model=LOCAL_MODELS.get(task, LOCAL_MODELS["default"]),
         )
 
-    # Select provider order based on tier
-    if tier == "intent":
-        priority = INTENT_PROVIDER_PRIORITY
-    elif tier == "fast":
-        # Fast: try groq first (low latency), then gemini as big fallback
-        priority = ["groq"] + [p for p in PROVIDER_PRIORITY if p != "groq"]
-    else:
-        # premium: use configured PROVIDER_PRIORITY (gemini first by default)
-        priority = PROVIDER_PRIORITY
-
-    seen = set()
+    # Maximum attempts = total keys (Gemini + Groq combined)
+    max_attempts = len(key_manager.accounts) * 2
     last_err = None
 
-    for provider in priority:
-        if provider in seen:
-            continue
-        seen.add(provider)
+    for attempt in range(max_attempts):
+        provider, current_key = key_manager.get_current_provider_and_key()
+        
+        # Determine model variant
+        if tier == "intent" and provider == "gemini":
+            model_type = "gemini_lite"
+        else:
+            model_type = provider
 
         try:
             return _call_cloud(
-                provider, system_prompt, conversation_history,
-                user_message, temperature, max_tokens,
+                model_type, system_prompt, conversation_history,
+                user_message, temperature, max_tokens, api_key=current_key
             )
         except RateLimitError as e:
-            print(f"  [LLM] {provider} rate-limited → trying next provider")
+            print(f"  [LLM] {provider.upper()} rate-limited. Rotating to next key...")
+            key_manager.mark_current_exhausted()
             last_err = e
+            time.sleep(1)  # Buffer before next attempt
             continue
         except Exception as e:
             print(f"  [LLM/{provider}] error: {e}")
             last_err = e
-            continue
+            break # If it's a non-rate-limit error, break and fallback to local
 
-    # All providers failed → local fallback (user never sees dead silence)
-    print("  [LLM] All cloud providers failed — falling back to local Ollama")
+    print("  [LLM] All cloud providers/keys exhausted — falling back to local Ollama")
     return _ollama(
         system_prompt, conversation_history, user_message,
         temperature, max_tokens, model=LOCAL_MODELS["default"],
     )
-
 
 def call_llm_simple(
     system_prompt: str,
@@ -193,14 +182,11 @@ class RateLimitError(Exception):
 #  Cloud dispatcher
 # ══════════════════════════════════════════════════════════════════════
 
-def _call_cloud(provider, sys_p, hist, user_msg, temp, max_t):
+def _call_cloud(provider, sys_p, hist, user_msg, temp, max_t, api_key):
     if provider == "groq":
-        return _groq(sys_p, hist, user_msg, temp, max_t)
+        return _groq(sys_p, hist, user_msg, temp, max_t, api_key)
     if provider in ("gemini", "gemini_lite"):
-        # Both use the same function — model string comes from CLOUD_CHAT_MODELS
-        return _gemini(sys_p, hist, user_msg, temp, max_t, provider=provider)
-    if provider == "cerebras":
-        return _cerebras(sys_p, hist, user_msg, temp, max_t)
+        return _gemini(sys_p, hist, user_msg, temp, max_t, api_key, provider=provider)
     if provider == "claude":
         return _claude(sys_p, hist, user_msg, temp, max_t)
     raise ValueError(f"Unknown provider: {provider}")
@@ -246,13 +232,12 @@ def _ollama(system_prompt, history, user_message, temperature, max_tokens, model
 
 # ── Groq ─────────────────────────────────────────────────────────────────
 
-def _groq(system_prompt, history, user_message, temperature, max_tokens):
+def _groq(system_prompt, history, user_message, temperature, max_tokens, api_key):
     from groq import Groq, RateLimitError as GroqRL
-    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY missing")
+        raise RuntimeError("Groq API key missing from rotation manager")
 
-    model = CLOUD_CHAT_MODELS["groq"]  # centralized — no hardcoding
+    model = CLOUD_CHAT_MODELS["groq"]
     client = Groq(api_key=api_key)
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -278,20 +263,10 @@ def _groq(system_prompt, history, user_message, temperature, max_tokens):
 
 # ── Gemini 2.5 Flash / Flash-Lite ──────────────────────────────────────
 
-def _gemini(system_prompt, history, user_message, temperature, max_tokens,
-            provider: str = "gemini"):
-    """
-    Handles both gemini (2.5 Flash) and gemini_lite (2.5 Flash-Lite).
-    Model string comes from CLOUD_CHAT_MODELS — no hardcoding here.
-
-    Safety settings set to BLOCK_NONE for all categories — required for
-    personal companion AI (romantic/emotional Hinglish content triggers
-    Gemini's default filter, causing 8-token truncated responses).
-    """
+def _gemini(system_prompt, history, user_message, temperature, max_tokens, api_key, provider="gemini"):
     from google import genai
-    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY missing")
+        raise RuntimeError("Gemini API key missing from rotation manager")
 
     model  = CLOUD_CHAT_MODELS.get(provider, CLOUD_CHAT_MODELS["gemini"])
     client = genai.Client(api_key=api_key)
@@ -302,9 +277,6 @@ def _gemini(system_prompt, history, user_message, temperature, max_tokens,
         contents.append({"role": role, "parts": [{"text": msg.get("content", "")}]})
     contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-    # Safety settings: BLOCK_NONE for all categories.
-    # Without this, Gemini truncates companion AI responses mid-sentence
-    # (observed as 8-token outputs ending with a dangling '[' emotion tag).
     _SAFETY_OFF = [
         {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_NONE"},
@@ -312,13 +284,7 @@ def _gemini(system_prompt, history, user_message, temperature, max_tokens,
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
     ]
 
-    # Gemini 2.5 Flash has "thinking" enabled by default. Thinking tokens
-    # draw from the same max_output_tokens budget. With max_output_tokens=280,
-    # thinking consumes ~260-270 tokens leaving only 10-13 for the actual reply
-    # → causes finish_reason=MAX_TOKENS at 11 tokens.
-    # Fix: disable thinking (not needed for conversational replies) + give
-    # enough output budget. Max actual reply tokens = 280, so 512 is safe.
-    _gemini_max_tokens = max(512, max_tokens)  # never below 512 for Gemini
+    _gemini_max_tokens = max(512, max_tokens)
 
     try:
         r = client.models.generate_content(
@@ -328,19 +294,10 @@ def _gemini(system_prompt, history, user_message, temperature, max_tokens,
                 "system_instruction": system_prompt,
                 "max_output_tokens":  _gemini_max_tokens,
                 "temperature":        temperature,
-                "thinking_config":    {"thinking_budget": 0},  # disable thinking overhead
+                "thinking_config":    {"thinking_budget": 0},
                 "safety_settings":    _SAFETY_OFF,
             },
         )
-
-        # Detect safety truncation even after BLOCK_NONE (shouldn't happen but log it)
-        try:
-            finish = r.candidates[0].finish_reason
-            if str(finish) not in ("FinishReason.STOP", "STOP", "1"):
-                print(f"  [LLM/Gemini] finish_reason={finish} — response may be incomplete")
-        except Exception:
-            pass
-
         reply = r.text.strip()
         _track(
             f"gemini:{model}",
@@ -350,48 +307,47 @@ def _gemini(system_prompt, history, user_message, temperature, max_tokens,
         return reply
     except Exception as e:
         err = str(e)
-        if "429" in err or "quota" in err.lower() or "resource_exhausted" in err.lower():
+        # 🚨 Added '503' and 'unavailable' so it triggers your rotation cycle instead of breaking to Ollama
+        if "429" in err or "503" in err or "unavailable" in err.lower() or "quota" in err.lower() or "resource_exhausted" in err.lower():
             raise RateLimitError(err)
-        if "404" in err or "not found" in err.lower():
-            print(f"  [LLM/Gemini] Model '{model}' not found: {err}")
         raise
 
 
 # ── Cerebras ────────────────────────────────────────────────────────────
 
-def _cerebras(system_prompt, history, user_message, temperature, max_tokens):
-    from cerebras.cloud.sdk import Cerebras
-    api_key = os.getenv("CEREBRAS_API_KEY")
-    if not api_key:
-        raise RuntimeError("CEREBRAS_API_KEY missing")
+# def _cerebras(system_prompt, history, user_message, temperature, max_tokens):
+#     from cerebras.cloud.sdk import Cerebras
+#     api_key = os.getenv("CEREBRAS_API_KEY")
+#     if not api_key:
+#         raise RuntimeError("CEREBRAS_API_KEY missing")
 
-    model = CLOUD_CHAT_MODELS["cerebras"]
-    client = Cerebras(api_key=api_key)
+#     model = CLOUD_CHAT_MODELS["cerebras"]
+#     client = Cerebras(api_key=api_key)
 
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in history:
-        role = "assistant" if msg.get("role") == "model" else msg.get("role", "user")
-        messages.append({"role": role, "content": msg.get("content", "")})
-    messages.append({"role": "user", "content": user_message})
+#     messages = [{"role": "system", "content": system_prompt}]
+#     for msg in history:
+#         role = "assistant" if msg.get("role") == "model" else msg.get("role", "user")
+#         messages.append({"role": role, "content": msg.get("content", "")})
+#     messages.append({"role": "user", "content": user_message})
 
-    try:
-        r = client.chat.completions.create(
-            model       = model,
-            messages    = messages,
-            temperature = temperature,
-            max_tokens  = max_tokens,
-        )
-        reply = r.choices[0].message.content.strip()
-        _track(
-            f"cerebras:{model}",
-            _approx_tokens(system_prompt + user_message),
-            _approx_tokens(reply),
-        )
-        return reply
-    except Exception as e:
-        if "429" in str(e) or "rate" in str(e).lower() or "limit" in str(e).lower():
-            raise RateLimitError(str(e))
-        raise
+#     try:
+#         r = client.chat.completions.create(
+#             model       = model,
+#             messages    = messages,
+#             temperature = temperature,
+#             max_tokens  = max_tokens,
+#         )
+#         reply = r.choices[0].message.content.strip()
+#         _track(
+#             f"cerebras:{model}",
+#             _approx_tokens(system_prompt + user_message),
+#             _approx_tokens(reply),
+#         )
+#         return reply
+#     except Exception as e:
+#         if "429" in str(e) or "rate" in str(e).lower() or "limit" in str(e).lower():
+#             raise RateLimitError(str(e))
+#         raise
 
 
 # ── Claude ───────────────────────────────────────────────────────────────
@@ -435,18 +391,21 @@ def print_usage():
 
 
 def call_llm_stream(system_prompt, history, user_message, temperature=0.72, max_tokens=280):
-    """Streams the LLM response token-by-token (Primary: Gemini 2.5 Flash)."""
+    """Streams the LLM response token-by-token using the currently active Key."""
     import os
     from google import genai
+    from core.llm_keys import key_manager
     
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY missing")
+    provider, current_key = key_manager.get_current_provider_and_key()
+    
+    # Simple fallback check for streaming: if current active is groq, we still force Gemini for stream
+    # or handle it gracefully. For now, just grab a Gemini key from the first account.
+    if provider == "groq":
+        current_key = key_manager.accounts[key_manager.current_account_idx]["gemini"]
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=current_key)
     model_name = CLOUD_CHAT_MODELS.get("gemini", "gemini-2.5-flash")
 
-    # Format history for Gemini
     contents = []
     for msg in history:
         role = "user" if msg.get("role") == "user" else "model"

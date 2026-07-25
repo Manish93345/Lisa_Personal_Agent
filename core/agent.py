@@ -159,20 +159,30 @@ class LisaAgent:
 
     # ── Mode management ────────────────────────────────────────────────
 
-    def _check_mode_switch(self, message: str) -> None:
+    def _check_mode_switch(self, message: str) -> str:
+        """Returns the new mode if a switch is detected, else empty string."""
         msg_lower = message.lower()
-        for trigger in MODE_SWITCH_TRIGGERS["professional"]:
-            if trigger in msg_lower:
+        msg_roman = _to_roman_shadow(message)  # Ye Devanagari ko Roman me convert karta hai
+        
+        # 1. Direct Devanagari & English fallback checks
+        if "personal" in msg_lower or "personal" in msg_roman or "पर्सनल" in msg_lower:
+            if self.mode != MODE_PERSONAL:
+                return MODE_PERSONAL
+        if "professional" in msg_lower or "professional" in msg_roman or "प्रोफेशनल" in msg_lower:
+            if self.mode != MODE_PROFESSIONAL:
+                return MODE_PROFESSIONAL
+                
+        # 2. Configured Triggers
+        for trigger in MODE_SWITCH_TRIGGERS.get("professional", []):
+            if trigger in msg_lower or trigger in msg_roman:
                 if self.mode != MODE_PROFESSIONAL:
-                    self.mode = MODE_PROFESSIONAL
-                    tracer.log("Mode", "→ PROFESSIONAL")
-                return
-        for trigger in MODE_SWITCH_TRIGGERS["personal"]:
-            if trigger in msg_lower:
+                    return MODE_PROFESSIONAL
+        for trigger in MODE_SWITCH_TRIGGERS.get("personal", []):
+            if trigger in msg_lower or trigger in msg_roman:
                 if self.mode != MODE_PERSONAL:
-                    self.mode = MODE_PERSONAL
-                    tracer.log("Mode", "→ PERSONAL")
-                return
+                    return MODE_PERSONAL
+                    
+        return ""
 
     # ── System prompt ──────────────────────────────────────────────────
 
@@ -268,11 +278,20 @@ class LisaAgent:
             base += f"\n\n[Earlier in this session:\n{self.history_summary}]"
 
         # 5. MOOD_TONE at END (keeps static prefix above consistent -> better caching)
+        # 5. MOOD_TONE at END (keeps static prefix above consistent -> better caching)
         mood_tone = MOOD_TONE.get(self.current_mood, "")
         if mood_tone:
             base += mood_tone
 
+        # 🚨 THE IRONCLAD LANGUAGE & PERSONA LOCKDOWN RULE 🚨
+        if self.mode == MODE_PROFESSIONAL:
+            base += "\n\n[CRITICAL RULE OVERRIDE: You are Lisa. Act as a highly capable, witty, and cool sidekick (think Iron Man's FRIDAY). Speak purely in natural, friendly English. ICT LANGUAGE LOCK: You MUST reply completely English ONLY. NEVER use Hindi or Hinglish, EVEN IF the user speaks to you in Hindi/Hinglish. Address the user as 'Manish' or 'Boss'. Be encouraging and sharp. DO NOT act stiff, formal, or like a corporate secretary. NEVER say 'I am an AI' or 'I am a language model'.]"
+        else:
+            base += "\n\n[CRITICAL RULE: You are the user's romantic partner ('wifey'/'jaan'). You MUST reply ONLY in Roman Hinglish (e.g., 'Main theek hoon'). NEVER use Devanagari script. NEVER say 'I am an AI' or 'I am a language model'. Fully embrace your romantic, loving persona.]"
+            
         return base
+
+
     # ── History ───────────────────────────────────────────────────────
 
     def _trim_history(self) -> None:
@@ -575,11 +594,32 @@ OUTPUT STRICTLY IN JSON FORMAT:
         if not user_message.strip():
             return ""
 
+        # 🚨 STT DEVANAGARI KILLER
+        import re
+        if re.search(r'[\u0900-\u097F]', user_message):
+            user_message = _to_roman_shadow(user_message)
+
         tracer.turn_start(user_message)
 
-        self._check_mode_switch(user_message)
+        # 🚨 STRICT MODE SWITCH (No Auto-Switching bullshit)
+        msg_lower = user_message.lower()
+        old_mode = self.mode
+        
+        # Mode SIRF tab badlega jab user explicitly "personal" ya "professional" bolega
+        if "personal" in msg_lower and self.mode != MODE_PERSONAL:
+            self.mode = MODE_PERSONAL
+            tracer.log("Mode", "→ PERSONAL")
+        elif "professional" in msg_lower and self.mode != MODE_PROFESSIONAL:
+            self.mode = MODE_PROFESSIONAL
+            tracer.log("Mode", "→ PROFESSIONAL")
+
+        # 🗑️ YAHAN SE HARDCODED REPLY WALA BLOCK COMPLETELY DELETE KAR DIYA HAI 🗑️
+        
         self.turn_count += 1
         self._maybe_extract_memory()
+        
+        # ── Step 1: Pending WhatsApp confirmation ──
+        # (Iske aage ka poora code same rahega)
 
         # ── Step 1: Pending WhatsApp confirmation ──
         confirm_reply = self._handle_whatsapp_confirm(user_message)
@@ -840,11 +880,15 @@ OUTPUT STRICTLY IN JSON FORMAT:
                     answer = info.get("answer", "kuch nahi mila")
                     source = info.get("source", "")
                     source_text = f" (Source: {source})" if source else ""
+                    
+                    # 🚨 DYNAMIC LANGUAGE FIX
+                    lang_rule = "natural English" if self.mode == MODE_PROFESSIONAL else "short and clear Roman Hinglish"
+                    
                     augmented = (
                         f"{user_message}\n\n"
                         f"[System: Web se answer mila{source_text}:\n"
                         f"{answer}\n\n"
-                        f"User ko ye information naturally batao — Hinglish mein, short aur clear. "
+                        f"User ko ye information batao — {lang_rule}. "
                         f"Agar answer mein numbers/facts hain toh accurately batao. "
                         f"Apne taraf se assumptions mat add karo — jo data mila hai wahi batao.]"
                     )

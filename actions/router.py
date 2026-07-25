@@ -157,13 +157,31 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
             if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level", "start_stealth", "stop_stealth"]:
                 
                 # === NAYA FILE SEARCH ACTION ===
+                # === NAYA FILE SEARCH ACTION ===
                 if action == "find_file":
-                    file_query = params.get("file", "")
-                    if not file_query:
+                    file_hint = params.get("file", "")
+                    
+                    if not file_hint:
+                        # Fallback extract if JSON params missed it
+                        file_hint = user_message.lower().replace("mere laptop mein", "").replace("dhoondho", "").replace("chala do", "").replace("play kar dijiye", "").strip()
+
+                    if not file_hint:
                         return False, "File ka naam nahi bataya."
                         
-                    from actions.file_actions import search_local_file
-                    special_result = search_local_file(file_query)
+                    # Call the Smart Fuzzy Finder directly
+                    from actions.file_finder import smart_find
+                    success, path, msg = smart_find(file_hint=file_hint)
+                    
+                    if success and path:
+                        import os
+                        try:
+                            os.startfile(path)
+                            special_result = (True, f"SYSTEM_RESULT|find_file|Mil gayi aur open kar di: {msg}")
+                        except Exception as e:
+                            special_result = (False, f"SYSTEM_RESULT|find_file|File mil gayi par open nahi hui: {e}")
+                    else:
+                        special_result = (False, f"SYSTEM_RESULT|find_file|'{file_hint}' nahi mili")
+                    
                     return special_result # Seedha return karo
                     
                 elif action == "whatsapp_message":

@@ -1,41 +1,40 @@
+# --- ML & AI ---
 sentence-transformers
-yt-dlp
-cerebras-cloud-sdk
 openai-whisper
-edge-tts
+huggingface_hub
+chromadb
+google-genai
+groq
+cerebras-cloud-sdk
+
+# --- Audio & Voice ---
 sounddevice
 soundfile
 pyaudio
 pipwin
-kokoro-onnx
-huggingface_hub
-gTTS
 pygame
+pvporcupine
+vosk
+edge-tts  
+
+# --- System & Automation ---
 pyvda
 pyautogui
 pywin32
-google-cloud-texttospeech
-rapidfuzz
-python-dotenv
-chromadb
-google-genai
-groq
-selenium
-webdriver-manager
 pyperclip
 pycaw
-indic-transliteration
+watchdog
+selenium
+webdriver-manager
+yt-dlp
 
-# Web UI
+# --- Web UI & API ---
 fastapi
 uvicorn[standard]
 python-multipart
-
-# HTTP
 requests
-# pip install sentence-transformers
-# pip install ai4bharat-transliteration
-watchdog
-pip install pvporcupine pyaudio
-pip install vosk pyaudio
-pip install requests pygame
+
+# --- Utils ---
+rapidfuzz
+python-dotenv
+indic-transliteration

@@ -15,6 +15,7 @@
 - # 🚨 Naya code: Lisa ke uthte hi file indexing background mein start kar do
     from actions.file_finder import run_indexer_background
     run_indexer_background()   -> isko uncomment karna hai during production -> location web_server.py
+- voice ke liye sarvam buy karna pdega and 
 
 
 Bhai, ye "advance type ka thought" nahi, ye seedha Iron Man ke J.A.R.V.I.S. level ka architecture hai! 🤯 Agar humne ye implement kar diya, toh LISA ek normal AI se uth kar ek Real System Guardian ban jayegi.

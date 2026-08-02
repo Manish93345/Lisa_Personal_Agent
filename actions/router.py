@@ -9,6 +9,8 @@ LISA — Action Router (v4 - Task Chaining Engine)
 """
 
 import re
+import threading
+from actions.file_finder import build_index
 
 from actions.intent_detector import detect_intent
 from actions.system_actions  import (
@@ -147,14 +149,14 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
 
         action_fn = ACTION_MAP.get(action)
         
-        if not action_fn and action not in ["find_file", "change_security_level", "start_stealth", "stop_stealth"]:
+        if not action_fn and action not in ["find_file", "change_security_level", "start_stealth", "stop_stealth", "update_index"]:
             continue
             
         print(f"[Router] Executing chained action: {action}")
         
         try:
             # ── Special param handling ──
-            if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level", "start_stealth", "stop_stealth"]:
+            if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level", "start_stealth", "stop_stealth", "update_index"]:
                 
                 # === NAYA FILE SEARCH ACTION ===
                 # === NAYA FILE SEARCH ACTION ===
@@ -162,27 +164,43 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                     file_hint = params.get("file", "")
                     
                     if not file_hint:
-                        # Fallback extract if JSON params missed it
                         file_hint = user_message.lower().replace("mere laptop mein", "").replace("dhoondho", "").replace("chala do", "").replace("play kar dijiye", "").strip()
 
                     if not file_hint:
                         return False, "File ka naam nahi bataya."
                         
-                    # Call the Smart Fuzzy Finder directly
                     from actions.file_finder import smart_find
-                    success, path, msg = smart_find(file_hint=file_hint)
+                    success, path, msg, score = smart_find(file_hint=file_hint, raw_query=user_message, return_score=True)
+                    
+                    # 🚨 NAYA LOGIC: Check karo user ne kholne ko bola hai ya sirf location puchi hai?
+                    open_verbs = ["khol", "open", "chala", "play", "dikha", "show", "start"]
+                    wants_open = any(v in user_message.lower() for v in open_verbs)
                     
                     if success and path:
                         import os
-                        try:
-                            os.startfile(path)
-                            special_result = (True, f"SYSTEM_RESULT|find_file|Mil gayi aur open kar di: {msg}")
-                        except Exception as e:
-                            special_result = (False, f"SYSTEM_RESULT|find_file|File mil gayi par open nahi hui: {e}")
+                        if score >= 90.0 and wants_open:
+                            # 90%+ Confidence AND user wants to open
+                            try:
+                                os.startfile(path)
+                                special_result = (True, f"SYSTEM_RESULT|find_file|Mil gayi aur open kar di: {msg}")
+                            except Exception as e:
+                                special_result = (False, f"SYSTEM_RESULT|find_file|File mil gayi par open nahi hui: {e}")
+                        else:
+                            # Yahan 2 conditions hain: Ya toh < 90% match, YA user ne sirf location puchi hai
+                            import os
+                            file_name = os.path.basename(path)
+                            
+                            if score >= 90.0 and not wants_open:
+                                instruction = f"Bolo ki '{file_name}' mil gayi hai ({path} mein). Aur softly pucho ki 'kya main ise open karu?'"
+                            else:
+                                instruction = f"Bolo ki exactly '{file_hint}' toh nahi mila, par {int(score)}% match ke sath '{file_name}' mila hai ({path} mein). Pucho ki kya main ise open karu?"
+                                
+                            special_result = (True, f"CONFIRM_FILE|{path}|{instruction}")
                     else:
                         special_result = (False, f"SYSTEM_RESULT|find_file|'{file_hint}' nahi mili")
                     
-                    return special_result # Seedha return karo
+                    return special_result
+
                     
                 elif action == "whatsapp_message":
                     success, msg = action_fn(
@@ -191,6 +209,20 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                         message = params.get("message", ""),
                         context = context,
                     )
+
+                # === FILE INDEX UPDATE ACTION ===
+                # === FILE INDEX UPDATE ACTION ===
+                elif action == "update_index":
+                    from actions.file_finder import build_index
+                    import threading
+                    # Background mein scan shuru kar do
+                    threading.Thread(target=build_index, daemon=True).start()
+                    success = True
+                    msg = "SYSTEM_RESULT|system_command|Maine laptop ki files background mein scan karna shuru kar diya hai, kuch minute mein database update ho jayega."
+                    special_result = (success, msg)
+                    return special_result
+
+
                 elif action == "whatsapp_file":
                     success, msg = action_fn(
                         contact = params.get("contact", ""),
@@ -199,8 +231,10 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                         query   = user_message,
                         context = context,
                     )
+
                 elif action == "whatsapp_unread":
                     success, msg = action_fn(query=user_message)
+
                 elif action == "whatsapp_read":
                     success, msg = action_fn(
                         contact = params.get("contact", ""),

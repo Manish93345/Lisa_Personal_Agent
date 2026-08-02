@@ -106,6 +106,12 @@ FAST_PATTERNS = [
                 "params": {"command": "mute"},
                 "confidence": 0.9}),
 
+    # ─────────── File Indexing ───────────
+    (r"\b(index|files?|database|data)\b.*\b(update|refresh|scan|sync)\b",
+     lambda m: {"action": "update_index",
+                "params": {},
+                "confidence": 0.95}),
+
     # ─────────── System: Screenshot ───────────
     (r"\b(screen ?shot|screenshot|snap)\b",
      lambda m: {"action": "system_command",
@@ -185,6 +191,7 @@ ACTION_KEYWORDS = {
     "dhundh", "kahan", "kaha", "document", "resume",
     "activate", "shift", "level", "security", "mode", "lockdown", "password",
     "monitor", "stealth", "nigraani", "report", "peeche", "nazar",
+    "index", "update", "refresh", "scan", "sync", "database",
 }
 
 
@@ -223,7 +230,7 @@ INTENT_SYSTEM_PROMPT = """Tum ek strict AI intent detector ho. Output HAMESHA va
 
 Actions: open_website, play_youtube, search_youtube, open_app, search_google,
 find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
-web_search, system_command, change_security_level, start_stealth, stop_stealth, none
+web_search, system_command, change_security_level, start_stealth, stop_stealth, update_index, none
 
 CRITICAL RULES (HAMESHA FOLLOW KARO):
 1. FILE SEARCH: Agar "dhundh", "search", "kaha hai", "movie", "chala do", "laptop mein" aaye -> "find_file". ZAROORI HAI ki tum exact movie ya file ka naam extract karke "params": {"file": "exact name"} mein bhejo. Poora sentence mat dalna.

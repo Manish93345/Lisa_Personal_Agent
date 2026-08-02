@@ -136,9 +136,16 @@ async def lifespan(app: FastAPI):
     
     print(f"  [Startup] Server ready\n")
 
-    # 🚨 Naya code: Lisa ke uthte hi file indexing background mein start kar do
-    # from actions.file_finder import run_indexer_background
-    # run_indexer_background()
+    # web_server.py ke lifespan function mein:
+    
+    # 🚨 Naya code: Sirf tabhi scan karo jab DB na ho
+    import os
+    if not os.path.exists("lisa_files.db"):
+        print("  [Startup] Database nahi mili. Initial background scan shuru kar rahi hoon...")
+        from actions.file_finder import run_indexer_background
+        run_indexer_background()
+    else:
+        print("  [Startup] File database pehle se hai. Full scan skipped! 🚀")
 
     yield
     try:
@@ -661,6 +668,16 @@ async def os_watcher_start():
 async def os_watcher_stop():
     report = eye.stop_and_report()
     return {"ok": True, "report": report, "status": eye.get_status()}
+
+
+from actions.file_finder import build_index
+import threading
+
+@app.post("/api/update_index")
+async def api_update_index():
+    """Trigger file indexing via GUI dashboard"""
+    threading.Thread(target=build_index, daemon=True).start()
+    return {"ok": True, "message": "File indexing started in background"}
 
 
 # ── Security ──────────────────────────────────────────────────────────

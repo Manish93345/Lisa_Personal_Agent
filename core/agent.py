@@ -153,6 +153,7 @@ class LisaAgent:
         self.last_read_messages     = []
         self.last_unread_contacts   = []
         self.history_summary = ""
+        self.pending_file = None
         self.memory_manager = MemoryManager()
         suffix = " (VOICE)" if voice_mode else ""
         print(f"\n  {AGENT_NAME} initialized in {self.mode.upper()} mode{suffix}\n")
@@ -540,6 +541,8 @@ OUTPUT STRICTLY IN JSON FORMAT:
 
         return None
 
+    
+
     # ── LLM call wrapper (with trace) ─────────────────────────────────
 
     def _llm_call(
@@ -591,6 +594,35 @@ OUTPUT STRICTLY IN JSON FORMAT:
     # ── Main chat ─────────────────────────────────────────────────────
 
     def chat(self, user_message: str) -> str:
+
+        # ── 🚨 CONFIRM FILE FLOW (STATE MANAGER) ──
+        if getattr(self, 'pending_file', None):
+            msg_lower = user_message.lower()
+            if any(w in msg_lower for w in ["haan", "yes", "kholo", "open", "khol do", "ha", "yup", "ya", "sahi hai"]):
+                import os
+                try:
+                    os.startfile(self.pending_file)
+                    reply = "Theek hai, maine open kar diya hai."
+                except Exception as e:
+                    reply = f"Error aaya open karne mein: {e}"
+                
+                self.pending_file = None
+                self.turn_count += 1
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+                
+            elif any(w in msg_lower for w in ["nahi", "no", "rehne do", "cancel", "mat kholo", "na", "galat"]):
+                reply = "Theek hai, maine cancel kar diya."
+                self.pending_file = None
+                self.turn_count += 1
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+            else:
+                # Agar user topic change kar de, toh pending file memory clear kar do aur aage badho
+                self.pending_file = None
+
         if not user_message.strip():
             return ""
 
@@ -805,6 +837,8 @@ OUTPUT STRICTLY IN JSON FORMAT:
         action_result = route_action(user_message, context=self.conversation_history)
         action_ms = (time.perf_counter() - t0) * 1000
 
+
+
         if action_result is not None:
             tracer.log("Action", f"Routed (success={action_result[0]})", duration_ms=action_ms)
         else:
@@ -814,6 +848,15 @@ OUTPUT STRICTLY IN JSON FORMAT:
 
         if action_result is not None:
             success, action_msg = action_result
+
+            # ── 🚨 CONFIRM FILE INTERCEPTOR (NAYA CODE YAHAN AAYEGA) ──
+            if action_msg.startswith("CONFIRM_FILE|"):
+                parts = action_msg.split("|", 2)
+                if len(parts) >= 3:
+                    self.pending_file = parts[1]  # Exact file/folder path memory mein save ho gaya
+                    system_instruction = parts[2]
+                    # Isko standard SYSTEM_RESULT bana do taaki LLM gracefully user se pooche
+                    action_msg = f"SYSTEM_RESULT|find_file|{system_instruction}"
 
             # ── Web Intelligence Result ──
             if action_msg.startswith("WEB_RESULT"):
@@ -1174,6 +1217,7 @@ OUTPUT STRICTLY IN JSON FORMAT:
         self.conversation_history = []
         self.turn_count           = 0
         self.pending_whatsapp     = None
+        self.pending_file         = None
         self.last_read_contact    = None
         self.last_read_messages   = []
         self.last_unread_contacts = []

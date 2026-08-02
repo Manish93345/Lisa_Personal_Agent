@@ -923,3 +923,32 @@ setInterval(refreshMemoryCount, 30000);
 setInterval(refreshTokenPanel, 15000);
 $input.focus();
 updateSendButton();
+
+
+// Sync Files Database Button Logic (Chat UI)
+const btnSyncFilesChat = document.getElementById("btnSyncFilesChat");
+
+if (btnSyncFilesChat) {
+    btnSyncFilesChat.addEventListener("click", async () => {
+        const originalText = btnSyncFilesChat.innerText;
+        btnSyncFilesChat.style.opacity = "0.5";
+        btnSyncFilesChat.innerText = "⏳...";
+        
+        try {
+            await fetch(API + "/api/update_index", { method: "POST" });
+            // Agar chat UI mein toast notification function hai toh ye chalega
+            if (typeof toast === "function") {
+                toast("Background file sync started! 🚀", "success");
+            } else {
+                alert("File database background mein update ho raha hai! 🚀");
+            }
+        } catch (e) {
+            console.error("Sync Error:", e);
+        }
+        
+        setTimeout(() => {
+            btnSyncFilesChat.style.opacity = "1";
+            btnSyncFilesChat.innerText = originalText;
+        }, 2000);
+    });
+}

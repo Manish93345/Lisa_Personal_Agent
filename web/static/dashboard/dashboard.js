@@ -541,3 +541,29 @@
 
   setTicker("SYSTEM ONLINE · L.I.S.A. core awake · awaiting operator…");
 })();
+
+
+// Sync Files Database Button Logic (Dashboard)
+const btnSyncFilesDash = document.getElementById("btnSyncFilesDash");
+
+if (btnSyncFilesDash) {
+    btnSyncFilesDash.addEventListener("click", async () => {
+        // Button loading animation
+        btnSyncFilesDash.style.opacity = "0.5";
+        btnSyncFilesDash.innerText = "⏳ SYNCING...";
+        
+        try {
+            await fetch("/api/update_index", { method: "POST" });
+            alert("SYSTEM: File database background mein update hona shuru ho gaya hai! 🚀");
+        } catch (e) {
+            console.error("Sync Error:", e);
+            alert("Error: Sync start nahi ho paaya.");
+        }
+        
+        // 2 second baad button wapas normal
+        setTimeout(() => {
+            btnSyncFilesDash.style.opacity = "1";
+            btnSyncFilesDash.innerText = "🔄 SYNC FILES";
+        }, 2000);
+    });
+}

@@ -74,6 +74,60 @@ def _get_collection():
     )
 
 
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+import uuid
+
+def ingest_document(collection, markdown_text: str, source_name: str, subject: str = "general"):
+    """
+    Markdown text ko smartly chunks mein todta hai aur ChromaDB mein save karta hai.
+    collection: Tumhara ChromaDB ka collection object
+    """
+    print(f"  [RAG] Processing and Chunking document: {source_name}...")
+
+    # ── 1. Smart Markdown Splitter (Heading ke hisaab se todega) ──
+    headers_to_split_on = [
+        ("#", "Header 1"),
+        ("##", "Header 2"),
+        ("###", "Header 3"),
+    ]
+    markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+    md_header_splits = markdown_splitter.split_text(markdown_text)
+
+    # ── 2. Overlap Splitter (Agar koi section bohot bada ho toh) ──
+    # chunk_overlap=150 ensures ki sentences beech se na kat jayein
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    final_splits = text_splitter.split_documents(md_header_splits)
+
+    documents = []
+    metadatas = []
+    ids = []
+
+    # ── 3. Metadata Tagging ──
+    for split in final_splits:
+        documents.append(split.page_content)
+        
+        # Jo metadata Langchain ne nikala (jaise Header 1: "UML") 
+        # usme hum apna custom metadata add kar rahe hain
+        meta = split.metadata
+        meta.update({
+            "source": source_name,
+            "subject": subject,
+            "type": "study_material"
+        })
+        metadatas.append(meta)
+        ids.append(str(uuid.uuid4()))
+
+    # ── 4. Save to Database ──
+    if documents:
+        collection.add(
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        print(f"  [RAG] ✅ Successfully injected {len(documents)} context chunks from '{source_name}' into Lisa's brain!")
+    else:
+        print("  [RAG] ⚠️ No text found to save.")
+
 # ── Embedding ──────────────────────────────────────────────────────────
 
 def _get_local_model():
@@ -207,6 +261,26 @@ def get_style_context(user_message: str, top_k: int = 4) -> str:
         "[Past conversation examples — inhi ki tarah style mein reply karna]\n\n"
         + "\n\n".join(selected)
     )
+
+
+def get_document_context(query: str, top_k: int = 3) -> str:
+    """User query ke liye ChromaDB se top matching PDF text chunks lata hai."""
+    try:
+        # Apni Chroma collection yahan use karo (e.g., collection, pdf_collection, ya rag_collection)
+        results = collection.query(
+            query_texts=[query],
+            n_results=top_k
+        )
+        
+        if results and results.get('documents') and results['documents'][0]:
+            # Extracted chunks ko join karke ek single text context banao
+            context_text = "\n\n---\n\n".join(results['documents'][0])
+            return context_text
+        return ""
+    except Exception as e:
+        print(f"  [RAG Document Retrieval Error]: {e}")
+        return ""
+
 
 
 def reset_recent():

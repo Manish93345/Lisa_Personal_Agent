@@ -149,14 +149,14 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
 
         action_fn = ACTION_MAP.get(action)
         
-        if not action_fn and action not in ["find_file", "change_security_level", "start_stealth", "stop_stealth", "update_index"]:
+        if not action_fn and action not in ["learn_file", "find_file", "change_security_level", "start_stealth", "stop_stealth", "update_index"]:
             continue
             
         print(f"[Router] Executing chained action: {action}")
         
         try:
             # ── Special param handling ──
-            if action in SPECIAL_PARAM_ACTIONS or action in ["find_file", "change_security_level", "start_stealth", "stop_stealth", "update_index"]:
+            if action in SPECIAL_PARAM_ACTIONS or action in ["learn_file", "find_file", "change_security_level", "start_stealth", "stop_stealth", "update_index"]:
                 
                 # === NAYA FILE SEARCH ACTION ===
                 # === NAYA FILE SEARCH ACTION ===
@@ -201,6 +201,49 @@ def route_action(user_message: str, context=None) -> tuple[bool, str] | None:
                     
                     return special_result
 
+
+                # === NAYA ACTION: PDF READ AUR LEARN KARNA ===
+                # === NAYA ACTION: PDF READ AUR LEARN KARNA ===
+                elif action == "learn_file":
+                    file_hint = params.get("file", "")
+                    
+                    if not file_hint:
+                        file_hint = user_message.lower().replace("read", "").replace("padh", "").replace("learn", "").strip()
+
+                    if not file_hint:
+                        return False, "Konsi file padhni hai, naam nahi bataya."
+                        
+                    from actions.file_finder import smart_find
+                    success, path, msg, score = smart_find(file_hint=file_hint + " .pdf", raw_query=user_message, return_score=True)
+                    
+                    # ── 🚨 THE ARCHITECTURAL GATEKEEPER 🚨 ──
+                    is_valid_match = False
+                    clean_path = ""
+                    
+                    if success and path:
+                        import os
+                        clean_path = path.strip().strip('"').strip("'")
+                        file_name = os.path.basename(clean_path).lower()
+                        
+                        # ROOT CAUSE FIX: Agar user ka search term (e.g., 'uml') file ke naam mein hai hi nahi,
+                        # toh iska matlab smart_find kachra (fuzzy hallucination) bhej raha hai. Isko reject karo!
+                        if file_hint.lower() in file_name:
+                            is_valid_match = True
+
+                    # ── Processing the Valid Match ──
+                    if is_valid_match:
+                        _, ext = os.path.splitext(clean_path)
+                        if ext.lower() == ".pdf":
+                            instruction = f"Bolo ki '{os.path.basename(clean_path)}' mil gayi hai ({clean_path} mein). Pucho ki 'kya main is PDF ko read karke apne database mein save kar lu?'"
+                            special_result = (True, f"CONFIRM_LEARN|{clean_path}|{instruction}")
+                        else:
+                            special_result = (False, f"SYSTEM_RESULT|learn_file|Mujhe '{os.path.basename(clean_path)}' mila hai par iska extension '{ext}' hai. Main abhi sirf PDF files read kar sakti hoon.")
+                    
+                    # ── Proper Rejection (When File is genuinely missing from DB) ──
+                    else:
+                        special_result = (False, f"SYSTEM_RESULT|learn_file|Maine apna database check kiya par mujhe '{file_hint}' naam ki koi exact PDF nahi mili. Shayad wo folder abhi tak index nahi hua hai. Aap mujhe 'file database update karo' bol kar naya scan shuru karwa sakte hain.")
+                    
+                    return special_result
                     
                 elif action == "whatsapp_message":
                     success, msg = action_fn(

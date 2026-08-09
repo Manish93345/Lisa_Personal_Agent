@@ -190,11 +190,17 @@ class LisaAgent:
     def _should_use_rag(self, user_message: str) -> bool:
         msg = user_message.lower().strip()
         words = msg.split()
-        if len(words) <= 3:
+        
+        # 🚨 FIX: Agar message chota hai par question hai, toh RAG trigger karo
+        question_words = ["kya", "kaise", "kyun", "kab", "batao", "explain", "what", "how", "why", "define", "pdf"]
+        has_question = any(w in msg for w in question_words)
+        
+        if len(words) <= 3 and not has_question:
             return False
+            
         has_cue = any(w in msg for w in EMOTIONAL_CUES)
-        is_long = len(words) >= 8
-        return has_cue or is_long
+        is_long = len(words) >= 6
+        return has_cue or is_long or has_question
 
     def _matched_mood_keywords(self, message: str, mood: str) -> list:
         """Return which keywords triggered the mood (for tracer)."""
@@ -213,78 +219,77 @@ class LisaAgent:
         return context_str
 
     def _build_system_prompt(self, user_message: str) -> str:
-        """
-        Build system prompt — Phase 0 Step 2 restructure:
-
-        ORDER (important for Gemini implicit caching):
-          1. STATIC personality base  (~200 tok) — identical every turn -> cache-ready
-          2. Memories                 (~70-100 tok)
-          3. RAG context              (CAPPED at 800 chars / ~200 tok — was up to 2091!)
-          4. History summary          (~50 tok)
-          5. MOOD_TONE               (~20 tok) — at END so static prefix above is stable
-
-        Token target: ~550 tok typical (was 1076-2800)
-        """
-        RAG_CHAR_CAP = 800   # chars -> ~200 tokens. Still enough for style context.
+        RAG_CHAR_CAP = 800
 
         self.current_mood = detect_mood(user_message)
-
-        # Mood trace
         matched_kws = self._matched_mood_keywords(user_message, self.current_mood)
         if self.current_mood != "neutral":
             tracer.log("Mood", f"{self.current_mood} (matched: {matched_kws})")
         else:
             tracer.log("Mood", "neutral")
 
-        # 1. STATIC personality base (no mood embedded -> same every turn)
         if self.mode == MODE_PERSONAL:
             base = get_personal_prompt_base(voice_mode=self.voice_mode)
         else:
             base = get_professional_prompt(voice_mode=self.voice_mode)
 
-        # 2. Smart memory (SQLite DB)
         t0 = time.perf_counter()
         memories = self._get_active_memory_context()
         mem_ms = (time.perf_counter() - t0) * 1000
         if memories:
             approx_tok = len(memories) // 4
-            tracer.log("Memory", f"Retrieved active facts from DB",
-                       duration_ms=mem_ms, tokens=approx_tok)
+            tracer.log("Memory", f"Retrieved active facts from DB", duration_ms=mem_ms, tokens=approx_tok)
             base += f"\n\n{memories}"
         else:
             tracer.log("Memory", "No active memories found", duration_ms=mem_ms)
 
-        # 3. Selective RAG with HARD CAP
+        # ── 🚨 THE NEW RAG INJECTION (Style + PDF Knowledge) ──
         if self._should_use_rag(user_message):
             t0 = time.perf_counter()
-            rag_context = get_style_context(user_message, top_k=2)
+            
+            # 1. Past Chat Style (Jo pehle se tha)
+            rag_style = get_style_context(user_message, top_k=2)
+            
+            # 2. PDF Knowledge (Naya PDF Retrieval)
+            try:
+                from memory.rag_memory import get_document_context
+                rag_docs = get_document_context(user_message, top_k=3)
+            except ImportError:
+                rag_docs = "" # Fallback agar rag_memory mein function nahi hai
+                
             rag_ms = (time.perf_counter() - t0) * 1000
-            if rag_context:
-                if len(rag_context) > RAG_CHAR_CAP:
-                    rag_context = rag_context[:RAG_CHAR_CAP] + "..."
-                approx_tok = len(rag_context) // 4
-                tracer.log("RAG", f"Triggered (capped {approx_tok} tok)",
-                           duration_ms=rag_ms, tokens=approx_tok)
-                base += f"\n\n{rag_context}"
+            
+            if rag_style or rag_docs:
+                combined_rag = ""
+                
+                # Pehle Knowledge Base inject karo taaki facts accurate rahein
+                if rag_docs:
+                    combined_rag += f"[CRITICAL KNOWLEDGE BASE FROM PDF]:\nUse this information to answer the user accurately:\n{rag_docs}\n\n"
+                    
+                # Phir Chat style lagao
+                if rag_style:
+                    if len(rag_style) > RAG_CHAR_CAP:
+                        rag_style = rag_style[:RAG_CHAR_CAP] + "..."
+                    combined_rag += f"[PAST CHAT STYLE]:\n{rag_style}"
+                    
+                approx_tok = len(combined_rag) // 4
+                tracer.log("RAG", f"Triggered (Knowledge+Style) (capped {approx_tok} tok)", duration_ms=rag_ms, tokens=approx_tok)
+                base += f"\n\n{combined_rag}"
             else:
                 tracer.log("RAG", "Triggered but no matches", duration_ms=rag_ms)
         else:
-            tracer.log("RAG", "Skipped (short/non-emotional)")
+            tracer.log("RAG", "Skipped (short/non-emotional/no-question)")
 
-        # 4. History summary
         raw_turns   = len(self.conversation_history)
         summary_len = len(self.history_summary) if self.history_summary else 0
         tracer.log("History", f"{raw_turns} raw turns + {summary_len} summary chars")
         if self.history_summary:
             base += f"\n\n[Earlier in this session:\n{self.history_summary}]"
 
-        # 5. MOOD_TONE at END (keeps static prefix above consistent -> better caching)
-        # 5. MOOD_TONE at END (keeps static prefix above consistent -> better caching)
         mood_tone = MOOD_TONE.get(self.current_mood, "")
         if mood_tone:
             base += mood_tone
 
-        # 🚨 THE IRONCLAD LANGUAGE & PERSONA LOCKDOWN RULE 🚨
         if self.mode == MODE_PROFESSIONAL:
             base += "\n\n[CRITICAL RULE OVERRIDE: You are Lisa. Act as a highly capable, witty, and cool sidekick (think Iron Man's FRIDAY). Speak purely in natural, friendly English. ICT LANGUAGE LOCK: You MUST reply completely English ONLY. NEVER use Hindi or Hinglish, EVEN IF the user speaks to you in Hindi/Hinglish. Address the user as 'Manish' or 'Boss'. Be encouraging and sharp. DO NOT act stiff, formal, or like a corporate secretary. NEVER say 'I am an AI' or 'I am a language model'.]"
         else:
@@ -623,6 +628,41 @@ OUTPUT STRICTLY IN JSON FORMAT:
                 # Agar user topic change kar de, toh pending file memory clear kar do aur aage badho
                 self.pending_file = None
 
+        # ── 🚨 CONFIRM LEARN FLOW (STATE MANAGER FOR PDF) ──
+        if getattr(self, 'pending_learn_file', None):
+            msg_lower = user_message.lower()
+            if any(w in msg_lower for w in ["haan", "yes", "karo", "read", "padh", "ha", "yup", "ya", "sahi hai", "bilkul"]):
+                file_to_learn = self.pending_learn_file
+                self.pending_learn_file = None # Memory clear kar di
+                
+                import os
+                file_name = os.path.basename(file_to_learn)
+                reply = f"Theek hai jaan, main '{file_name}' ko read kar rahi hoon. File badi hui toh thoda time lag sakta hai, main background mein kaam kar lungi!"
+                
+                # PDF Padhne ka kaam background mein chalega taaki Lisa tujhse baat karti rahe
+                def _bg_learn():
+                    from actions.learn_document import learn_pdf
+                    learn_success, learn_msg = learn_pdf(file_to_learn, subject="general")
+                    print(f"\n  [Background PDF] {learn_msg}")
+                
+                import threading
+                threading.Thread(target=_bg_learn, daemon=True).start()
+                
+                self.turn_count += 1
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+                
+            elif any(w in msg_lower for w in ["nahi", "no", "rehne do", "cancel", "mat karo", "na", "galat"]):
+                reply = "Theek hai, maine PDF reading cancel kar di."
+                self.pending_learn_file = None
+                self.turn_count += 1
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+            else:
+                self.pending_learn_file = None # Topic change hua toh state clear
+
         if not user_message.strip():
             return ""
 
@@ -857,6 +897,14 @@ OUTPUT STRICTLY IN JSON FORMAT:
                     system_instruction = parts[2]
                     # Isko standard SYSTEM_RESULT bana do taaki LLM gracefully user se pooche
                     action_msg = f"SYSTEM_RESULT|find_file|{system_instruction}"
+                
+            # ── 🚨 CONFIRM LEARN INTERCEPTOR (For PDF Reading) ──
+            if action_msg.startswith("CONFIRM_LEARN|"):
+                parts = action_msg.split("|", 2)
+                if len(parts) >= 3:
+                    self.pending_learn_file = parts[1]  # Exact PDF path memory mein save ho gaya
+                    system_instruction = parts[2]
+                    action_msg = f"SYSTEM_RESULT|learn_file|{system_instruction}"
 
             # ── Web Intelligence Result ──
             if action_msg.startswith("WEB_RESULT"):

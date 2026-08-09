@@ -153,6 +153,14 @@ FAST_PATTERNS = [
      lambda m: {"action": "play_youtube",
                 "params": {"query": ""},
                 "confidence": 0.85}),
+
+    # ─────────── Learn / Read PDF ───────────
+
+    (r"\b(read|padh|scan|learn)\b.*?\b([a-zA-Z0-9_\-]+)\s*(?:pdf|file|document)",
+     lambda m: {"action": "learn_file",
+                "params": {"file": m.group(2).strip()},
+                "confidence": 0.95}),
+
 ]
 
 # Casual chitchat — NO action, just talk
@@ -192,6 +200,7 @@ ACTION_KEYWORDS = {
     "activate", "shift", "level", "security", "mode", "lockdown", "password",
     "monitor", "stealth", "nigraani", "report", "peeche", "nazar",
     "index", "update", "refresh", "scan", "sync", "database",
+    "read", "padh", "learn", "pdf"
 }
 
 
@@ -230,7 +239,7 @@ INTENT_SYSTEM_PROMPT = """Tum ek strict AI intent detector ho. Output HAMESHA va
 
 Actions: open_website, play_youtube, search_youtube, open_app, search_google,
 find_file, whatsapp_message, whatsapp_file, whatsapp_unread, whatsapp_read,
-web_search, system_command, change_security_level, start_stealth, stop_stealth, update_index, none
+web_search, system_command, change_security_level, start_stealth, stop_stealth, update_index, learn_file, none
 
 CRITICAL RULES (HAMESHA FOLLOW KARO):
 1. FILE SEARCH: Agar "dhundh", "search", "kaha hai", "movie", "chala do", "laptop mein" aaye -> "find_file". ZAROORI HAI ki tum exact movie ya file ka naam extract karke "params": {"file": "exact name"} mein bhejo. Poora sentence mat dalna.
@@ -239,6 +248,7 @@ CRITICAL RULES (HAMESHA FOLLOW KARO):
 4. STEALTH MONITORING: Agar user bole "sab monitor karo" ya "nazar rakho" -> "start_stealth". Agar bole "report do" ya "kya hua tha" -> "stop_stealth".
 5. MULTI-COMMANDS: Agar user 3 alag commands de, toh JSON array mein strictly 3 objects hone chahiye.
 6. WEB SEARCH & KNOWLEDGE: Agar user flights, ticket prices, live match score, current events, ya koi general knowledge (science, history) puche -> "web_search" (e.g., {"action": "web_search", "params": {"type": "search", "query": "user exact question"}}).
+7. LEARN PDF/FILE: Agar user bole "UML pdf read karna", "mera resume padh lo", ya "scan this document", toh action HAMESHA "learn_file" hoga. "params": {"file": "file name"}.
 
 EXAMPLES (INHE STRICTLY FOLLOW KARO):
 

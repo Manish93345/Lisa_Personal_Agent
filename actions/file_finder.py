@@ -208,15 +208,44 @@ def smart_find(folder_hint: str = "", file_hint: str = "", raw_query: str = "", 
         score = 100 # Agar substring mil gaya toh confidence 100%
         
         if matched_items:
-            # Agar multiple mile, toh FOLDER ko priority do (taaki hum uske andar video dhundh sake)
-            dirs = [t for t in matched_items if t[2] == 1]
-            files = [t for t in matched_items if t[2] == 0]
+            # 🚨 THE ROOT CAUSE FIX: Smart Priority Scoring System
+            best_score = -9999
             
-            if dirs:
-                # Sabse chota naam pick karo (wohi exact folder hoga)
-                best_match = min(dirs, key=lambda x: len(x[0]))
-            else:
-                best_match = min(files, key=lambda x: len(x[0]))
+            for item in matched_items:
+                item_name = item[0].lower()
+                is_dir = item[2]
+                item_ext = os.path.splitext(item_name)[1]
+                
+                # Base score: length jitni choti, utna accha (shorter names get less penalty)
+                current_score = -len(item_name)
+                
+                clean_item_name = item_name.replace(" ", "").replace("_", "").replace(item_ext, "")
+                
+                # 1. EXACT MATCH (e.g., "uml" == "uml") -> Highest Priority
+                if search_term == clean_item_name:
+                    current_score += 1000
+                
+                # 2. STARTS WITH (e.g., "uml_diagrams") -> Second Priority
+                elif clean_item_name.startswith(search_term):
+                    current_score += 500
+                    
+                # 3. EXTENSION TARGETING (The PDF Fix)
+                if target_exts:
+                    # Agar command mein "pdf/video/file" hai, toh us exact file ko extra points do
+                    if item_ext in target_exts:
+                        current_score += 800  
+                    # Aur folders ko penalty do taaki wo beech mein na aaye
+                    elif is_dir == 1:
+                        current_score -= 200  
+                else:
+                    # Agar generic open command hai, toh normal folders ko priority do
+                    if is_dir == 1:
+                        current_score += 300
+                        
+                # Pick the one with the highest score
+                if current_score > best_score:
+                    best_score = current_score
+                    best_match = item
         else:
             # Agar spaceless matching bhi fail ho (jaise spelling mistake), TABHI RapidFuzz use karo
             from rapidfuzz import fuzz, process

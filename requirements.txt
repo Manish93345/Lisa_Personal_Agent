@@ -38,3 +38,20 @@ requests
 rapidfuzz
 python-dotenv
 indic-transliteration
+
+# --- PDF & OCR Dependencies ---
+PyMuPDF==1.24.11
+paddleocr==2.8.1
+
+# 🚨 Dependency Conflict Fixers (Gemini aur Paddle ko sath chalane ke liye)
+protobuf==4.25.8
+click==8.1.7
+PyYAML==6.0.3
+
+# 🚨 PaddlePaddle Engine (Install manually via URL for Windows CUDA 12)
+# paddlepaddle-gpu==2.6.1.post120  -> iss se download nhi karna hai niche wale se karna hai
+# python -m pip install paddlepaddle-gpu==2.6.1.post120 -f https://www.paddlepaddle.org.cn/whl/windows/mkl/avx/stable.html
+
+
+# pip install langchain-text-splitters
+

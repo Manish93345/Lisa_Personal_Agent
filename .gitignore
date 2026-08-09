@@ -27,3 +27,10 @@ test_piper.py
 /Tests
 lisa_files.db
 temp_tts.wav 
+**/__pycache__/
+*.pyc
+.env.bak
+.env.*.local
+*.log
+lisa_os/**/__pycache__/
+/docs 

@@ -267,6 +267,7 @@ def get_document_context(query: str, top_k: int = 3) -> str:
     """User query ke liye ChromaDB se top matching PDF text chunks lata hai."""
     try:
         # Apni Chroma collection yahan use karo (e.g., collection, pdf_collection, ya rag_collection)
+        collection = _get_collection()
         results = collection.query(
             query_texts=[query],
             n_results=top_k

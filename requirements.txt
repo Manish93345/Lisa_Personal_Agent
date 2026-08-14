@@ -55,3 +55,5 @@ PyYAML==6.0.3
 
 # pip install langchain-text-splitters
 
+langgraph
+langgraph-checkpoint-sqlite

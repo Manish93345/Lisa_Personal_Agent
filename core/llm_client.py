@@ -298,7 +298,15 @@ def _gemini(system_prompt, history, user_message, temperature, max_tokens, api_k
                 "safety_settings":    _SAFETY_OFF,
             },
         )
-        reply = r.text.strip()
+        reply = (r.text or "").strip()
+        if not reply:
+            # Gemini ne blank/blocked response diya (safety filter, empty
+            # candidate, etc.) — RateLimitError raise karo taaki outer loop
+            # Groq pe rotate kare, seedha local pe crash na ho
+            raise RateLimitError(
+                f"Gemini returned empty response (possible safety block). "
+                f"finish_reason={getattr(r.candidates[0], 'finish_reason', '?') if getattr(r, 'candidates', None) else '?'}"
+            )
         _track(
             f"gemini:{model}",
             _approx_tokens(system_prompt + user_message),

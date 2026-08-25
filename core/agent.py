@@ -11,9 +11,11 @@ LISA — Main Agent (with Smart Memory + WhatsApp Confirmation Flow)
   - temperature: 0.85 → 0.72 (reduces Gemini's tendency to repeat content)
   - Tags stripped from history entries (saves tokens + prevents model copying tag style)
 """
+
 import re as _re_agent
 import json
-from memory.memory_db import MemoryManager
+import re
+from lisa_os.memory_fabric.longterm import store as memory_store
 
 def _strip_audio_tags_agent(text: str) -> str:
     """Strip ElevenLabs audio tags like [excited], [soft] from text.
@@ -48,7 +50,7 @@ def _deduplicate_response(text: str) -> str:
             return first_part
     return text
 
-from memory.long_term import get_relevant_memories, get_full_memories
+from lisa_os.memory_fabric.longterm.store import get_relevant_memories, get_full_memories
 from core.llm_client  import get_response, call_llm_simple, print_usage
 from core.tracer      import tracer
 import threading
@@ -64,7 +66,7 @@ from config.prompts import (
     detect_mood, MODE_SWITCH_TRIGGERS, MOOD_KEYWORDS, MOOD_TONE
 )
 from memory.rag_memory       import get_style_context, reset_recent
-from memory.long_term        import get_all_memories, save_memory
+from lisa_os.memory_fabric.longterm.store import get_all_memories, save_memory
 from memory.memory_extractor import extract_and_save
 from actions.router          import route_action
 
@@ -78,6 +80,32 @@ EXTRACT_EVERY = 8
 # rakhte hain JUST FOR MATCHING — user-facing text Devanagari hi rehta hai.
 import re as _re_shadow
 _DEVA_RE = _re_shadow.compile(r'[\u0900-\u097F]')
+
+# Phase 2 — safety net for fact extraction (reuses MOOD_KEYWORDS["flirty"])
+_ROMANTIC_WORDS = set(MOOD_KEYWORDS.get("flirty", [])) | {"kiss", "kisses", "kissed"}
+
+def _looks_romantic(text) -> bool:
+    if not text:
+        return False
+    text_lower = str(text).lower()
+    return any(w in text_lower for w in _ROMANTIC_WORDS)
+
+# Phase 2 v2 — general hallucination guard, koi bhi fact ke liye kaam
+# karega, sirf ek specific case ke liye nahi.
+def _quote_supported(quote: str, source_text: str, min_overlap: float = 0.5) -> bool:
+    """Extracted fact ke saath diya gaya 'quote' sach mein conversation
+    mein mila ya nahi, word-overlap se check karta hai (exact substring
+    nahi — chhota model thoda paraphrase kar sakta hai, lekin agar
+    quote ka poora khyal hi conversation se match nahi karta, wo
+    hallucination hai)."""
+    if not quote or not quote.strip():
+        return False
+    quote_words = set(re.findall(r"\w+", quote.lower()))
+    if not quote_words:
+        return False
+    source_words = set(re.findall(r"\w+", source_text.lower()))
+    overlap = len(quote_words & source_words) / len(quote_words)
+    return overlap >= min_overlap
 
 def _to_roman_shadow(text: str) -> str:
     """Quick & dirty Devanagari → Roman for internal pattern matching.
@@ -154,7 +182,7 @@ class LisaAgent:
         self.last_unread_contacts   = []
         self.history_summary = ""
         self.pending_file = None
-        self.memory_manager = MemoryManager()
+        self.memory_manager = memory_store.LegacyMemoryManagerAdapter()
         suffix = " (VOICE)" if voice_mode else ""
         print(f"\n  {AGENT_NAME} initialized in {self.mode.upper()} mode{suffix}\n")
 
@@ -210,7 +238,7 @@ class LisaAgent:
         return [kw for kw in MOOD_KEYWORDS.get(mood, []) if kw in msg_lower][:3]
 
     def _get_active_memory_context(self) -> str:
-        active_memories = self.memory_manager.get_all_active_memories()
+        active_memories = memory_store.get_all_active_memories()
         if not active_memories:
             return ""
         context_str = "USER LONG-TERM MEMORIES:\n"
@@ -357,72 +385,128 @@ class LisaAgent:
     def _extract_and_update_memory(self, history: list) -> None:
         if len(history) < 2:
             return
-        
+
         history_str = ""
         for msg in history:
             role = "Manish" if msg.get("role") == "user" else "Lisa"
             history_str += f"{role}: {msg.get('content', '')}\n"
 
-        prompt = """Tum ek strict Data Extraction Bot ho. Tumhara kaam user ki chat se sirf 'Real-Life Hard Facts' nikalna hai.
+        known = memory_store.known_keys_by_category()
+        known_str = "\n".join(f"  {cat}: {', '.join(keys)}" for cat, keys in known.items()) or "  (none yet)"
+
+        prompt = f"""Tum ek strict Data Extraction Bot ho. Tumhara kaam user ki chat se sirf 'Real-Life Hard Facts' nikalna hai.
 
 CRITICAL RULES (HAMESHA FOLLOW KARO):
-1. Romantic baatein, flirting, kisses, wifey jokes 100% IGNORE karo.
+1. Romantic baatein, flirting, kisses, wifey jokes 100% IGNORE karo. Koi bhi
+   affection/flirty word (pyaar, jaan, baby, kiss, cute, love, dil, mohabbat)
+   wala data KABHI save mat karo, chahe wo kitna bhi "fact" jaisa lage.
 2. SYSTEM COMMANDS (volume change, song play, video sent, last_message, whatsapp draft) 100% IGNORE karo. Inko memory mein save NAHI karna hai.
-3. KEWAL IN CATEGORIES KA DATA SAVE KARO: 'academic' (Semester, SGPA), 'personal_info', 'career', 'preferences'.
+3. KEWAL IN CATEGORIES KA DATA SAVE KARO: 'academic', 'personal', 'preference', 'family', 'career'.
 4. Agar baat rule 3 se match nahi karti, toh immediately empty operations return karo!
+5. Neeche di gayi keys sirf NAMING REFERENCE ke liye hain — agar CHAT mein
+   wahi fact firse bola gaya hai toh EXISTING key reuse karo. Ye
+   list kisi purane fact ko CHHEDNE ka nimantran NAHI hai — agar chat mein
+   uska zikr hi nahi hua, toh use bilkul mat touch karo:
+{known_str}
+6. HAR operation ke saath ek "quote" field do — CHAT se copy kiya hua
+   asli phrase (Manish ya Lisa ke exact ya near-exact words) jo is fact
+   ko directly support karta ho. Agar tumhare paas koi real quote nahi
+   hai, operation mat banao — khali chhod do.
+7. Agar EK hi message mein MULTIPLE alag-alag facts hain (jaise 2 dost
+   ke naam ek saath, ya naam + roommate ek saath), toh SABKO capture
+   karo — sirf pehla fact nikal ke mat ruk jao. "operations" list mein
+   jitne bhi clear facts hain utne operations honge.
 
 EXAMPLES:
 Chat: "volume 100 kar do aur sugri ko message karo ki video send kiya hai"
-Output: {"operations": []}
+Output: {{"operations": []}}
 
 Chat: "mera 6th sem ka result aa gaya, 9.42 sgpa aaya hai"
-Output: {"operations": [{"action": "ADD", "key": "latest_marks", "value": "6th Sem SGPA: 9.42", "category": "academic", "expires_at": null}]}
+Output: {{"operations": [{{"action": "ADD", "key": "latest_marks", "value": "6th Sem SGPA: 9.42", "category": "academic", "expires_at": null, "quote": "mera 6th sem ka result aa gaya, 9.42 sgpa aaya hai"}}]}}
+
+Chat: "aaj tumhe bahut miss kar rha tha jaanu, itna cute lag rahi ho"
+Output: {{"operations": []}}
+
+Chat: "mera roommate ka naam Aniket hai"
+Output: {{"operations": [{{"action": "ADD", "key": "roommate_name", "value": "Aniket", "category": "personal", "expires_at": null, "quote": "mera roommate ka naam Aniket hai"}}]}}
+
+Chat: "mera dost ka naam Raushan hai aur mere roommate ka naam Aniket hai"
+Output: {{"operations": [
+    {{"action": "ADD", "key": "friend2_name", "value": "Raushan", "category": "personal", "expires_at": null, "quote": "mera dost ka naam Raushan hai"}},
+    {{"action": "ADD", "key": "roommate_name", "value": "Aniket", "category": "personal", "expires_at": null, "quote": "mere roommate ka naam Aniket hai"}}
+]}}
 
 OUTPUT STRICTLY IN JSON FORMAT:
-{
+{{
     "operations": [
-        {"action": "ADD/UPDATE/DELETE", "key": "topic", "value": "details", "category": "academic", "expires_at": null}
+        {{"action": "ADD/UPDATE/DELETE", "key": "topic", "value": "details", "category": "academic", "expires_at": null, "quote": "..."}}
     ]
-}"""
-        
+}}"""
+
         try:
             response_text = call_llm_simple(
                 system_prompt=prompt,
                 user_message=f"CHAT HISTORY:\n{history_str}",
                 temperature=0.1,
-                max_tokens=300,
+                max_tokens=400,
                 tier="local",
                 task="memory"
             )
-            
-            import re
-            
+
+            print(f"  [Memory DB DEBUG] Raw LLM output: {response_text!r}")
             clean_text = response_text.replace("```json", "").replace("```", "").strip()
             if not clean_text: return
-            
-            # Smart JSON Extractor: Sirf { se lekar } tak ka data nikalega
+
             match = re.search(r'\{.*\}', clean_text, re.DOTALL)
             if match:
                 clean_text = match.group(0)
             else:
-                return  # JSON nahi mila toh safely return kar jao
-            
+                return
+
             data = json.loads(clean_text)
             operations = data.get("operations", [])
-            
-            for op in operations:
-                action = op.get("action")
-                key = op.get("key")
-                value = op.get("value", "")
-                category = op.get("category", "general")
-                expires_at = op.get("expires_at")
 
-                if action in ["ADD", "UPDATE"]:
-                    self.memory_manager.upsert_memory(key, value, category, expires_at)
-                elif action == "DELETE":
-                    self.memory_manager.delete_memory(key)
-                    
-            print(f"  [Memory DB] Processed {len(operations)} smart operations.")
+            saved, skipped = 0, 0
+            for op in operations:
+                # Per-operation isolation — one bad/weird operation must
+                # never take the rest of a good batch down with it.
+                try:
+                    action = op.get("action")
+                    key = op.get("key")
+                    value = op.get("value")
+                    category = op.get("category", "general")
+                    expires_at = op.get("expires_at")
+                    quote = op.get("quote", "") or ""
+
+                    if action in ("ADD", "UPDATE"):
+                        if not key or not isinstance(value, str) or not value.strip():
+                            print(f"  [Memory DB] Skipped (empty/invalid value): {key}={value!r}")
+                            skipped += 1
+                            continue
+                        if _looks_romantic(key) or _looks_romantic(value):
+                            print(f"  [Memory DB] Blocked (safety net, looked romantic): {key}={value}")
+                            skipped += 1
+                            continue
+                        if not _quote_supported(quote, history_str):
+                            print(f"  [Memory DB] Blocked (no supporting evidence in chat): {key}={value!r} quote={quote!r}")
+                            skipped += 1
+                            continue
+                        memory_store.save_memory(category, key, value, source="extracted", expires_at=expires_at)
+                        saved += 1
+
+                    elif action == "DELETE":
+                        if not _quote_supported(quote, history_str):
+                            print(f"  [Memory DB] Blocked delete (no supporting evidence): {key}")
+                            skipped += 1
+                            continue
+                        memory_store.delete_memory(category, key)
+                        saved += 1
+                except Exception as op_err:
+                    print(f"  [Memory DB] Skipped one bad operation: {op_err}")
+                    skipped += 1
+                    continue
+
+            print(f"  [Memory DB] Processed {saved}/{len(operations)} smart operations ({skipped} skipped/blocked).")
         except Exception as e:
             print(f"  [Memory DB] Extractor failed: {e}")
 

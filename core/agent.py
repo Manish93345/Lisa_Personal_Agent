@@ -387,6 +387,8 @@ class LisaAgent:
             return
 
         history_str = ""
+        if self.history_summary:
+            history_str += f"[Earlier in this session:\n{self.history_summary}]\n\n"
         for msg in history:
             role = "Manish" if msg.get("role") == "user" else "Lisa"
             history_str += f"{role}: {msg.get('content', '')}\n"
@@ -416,6 +418,19 @@ CRITICAL RULES (HAMESHA FOLLOW KARO):
    ke naam ek saath, ya naam + roommate ek saath), toh SABKO capture
    karo — sirf pehla fact nikal ke mat ruk jao. "operations" list mein
    jitne bhi clear facts hain utne operations honge.
+8. Agar EK hi insaan ke 2 naam pata chalein (nickname + real naam,
+   jaise "Sugri jiska asli naam Sikil hai"), toh DONO ko ek hi value
+   mein combine karo — koi bhi naam mat gira do. Format: "RealNaam
+   (nickname: NicknameNaam)" — jaise "Sikil (nickname: Sugri)".
+9. Agar fact TEMPORARY hai — sirf kuch der/din/hafte ke liye sach hai
+   (jaise "aaj busy hoon", "is hafte exam hai") — "expires_at" field
+   mein ek ISO date daalo jab tak ye fact valid hai. Permanent facts
+   ke liye expires_at hamesha null rahega.
+10. Agar koi fact ka STATUS badal gaya hai (jaise "internship khatam
+    ho gayi", "ab wahan kaam nahi karta") — us existing key ko UPDATE
+    karo naye status ke saath, purani value apne aap history mein
+    save ho jayegi. DELETE sirf tab karo jab fact poori tarah galat
+    ho gaya ho, khatam hone se history rakhni hai toh UPDATE use karo.
 
 EXAMPLES:
 Chat: "volume 100 kar do aur sugri ko message karo ki video send kiya hai"
@@ -427,14 +442,20 @@ Output: {{"operations": [{{"action": "ADD", "key": "latest_marks", "value": "6th
 Chat: "aaj tumhe bahut miss kar rha tha jaanu, itna cute lag rahi ho"
 Output: {{"operations": []}}
 
-Chat: "mera roommate ka naam Aniket hai"
-Output: {{"operations": [{{"action": "ADD", "key": "roommate_name", "value": "Aniket", "category": "personal", "expires_at": null, "quote": "mera roommate ka naam Aniket hai"}}]}}
-
 Chat: "mera dost ka naam Raushan hai aur mere roommate ka naam Aniket hai"
 Output: {{"operations": [
     {{"action": "ADD", "key": "friend2_name", "value": "Raushan", "category": "personal", "expires_at": null, "quote": "mera dost ka naam Raushan hai"}},
     {{"action": "ADD", "key": "roommate_name", "value": "Aniket", "category": "personal", "expires_at": null, "quote": "mere roommate ka naam Aniket hai"}}
 ]}}
+
+Chat: "mera dost sugri jiska asli naam sikil hai"
+Output: {{"operations": [{{"action": "ADD", "key": "dost_ka_naam", "value": "Sikil (nickname: Sugri)", "category": "personal", "expires_at": null, "quote": "mera dost sugri jiska asli naam sikil hai"}}]}}
+
+Chat: "is hafte exam hai, thoda busy rahunga"
+Output: {{"operations": [{{"action": "ADD", "key": "current_status", "value": "exams ke karan busy", "category": "academic", "expires_at": "2026-09-01T00:00:00", "quote": "is hafte exam hai, thoda busy rahunga"}}]}}
+
+Chat: "meri LancerTech ki internship over ho gayi"
+Output: {{"operations": [{{"action": "UPDATE", "key": "internship_company", "value": "LancerTech (completed)", "category": "career", "expires_at": null, "quote": "meri LancerTech ki internship over ho gayi"}}]}}
 
 OUTPUT STRICTLY IN JSON FORMAT:
 {{
@@ -448,8 +469,8 @@ OUTPUT STRICTLY IN JSON FORMAT:
                 system_prompt=prompt,
                 user_message=f"CHAT HISTORY:\n{history_str}",
                 temperature=0.1,
-                max_tokens=400,
-                tier="local",
+                max_tokens=500,
+                tier="premium",
                 task="memory"
             )
 
@@ -468,8 +489,6 @@ OUTPUT STRICTLY IN JSON FORMAT:
 
             saved, skipped = 0, 0
             for op in operations:
-                # Per-operation isolation — one bad/weird operation must
-                # never take the rest of a good batch down with it.
                 try:
                     action = op.get("action")
                     key = op.get("key")
@@ -491,7 +510,8 @@ OUTPUT STRICTLY IN JSON FORMAT:
                             print(f"  [Memory DB] Blocked (no supporting evidence in chat): {key}={value!r} quote={quote!r}")
                             skipped += 1
                             continue
-                        memory_store.save_memory(category, key, value, source="extracted", expires_at=expires_at)
+                        memory_store.save_memory(category, key, value, source="extracted",
+                                                  expires_at=expires_at, reason=quote)
                         saved += 1
 
                     elif action == "DELETE":
@@ -499,7 +519,7 @@ OUTPUT STRICTLY IN JSON FORMAT:
                             print(f"  [Memory DB] Blocked delete (no supporting evidence): {key}")
                             skipped += 1
                             continue
-                        memory_store.delete_memory(category, key)
+                        memory_store.delete_memory(category, key, reason=quote)
                         saved += 1
                 except Exception as op_err:
                     print(f"  [Memory DB] Skipped one bad operation: {op_err}")

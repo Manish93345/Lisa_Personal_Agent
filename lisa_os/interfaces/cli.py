@@ -92,7 +92,10 @@ def main():
         try:
             user_input = input(f"{USER_NAME}: ").strip()
         except (KeyboardInterrupt, EOFError):
-            agent.end_session()
+            try:
+                agent.end_session()
+            except KeyboardInterrupt:
+                print("\n  [Memory] Extraction skipped — dobara Ctrl+C dabaya.")
             print(f"\n\n  {AGENT_NAME}: Alvida! \U0001F44B\n")
             break
 

@@ -1,22 +1,13 @@
 """
-lisa_os.memory_fabric.longterm.store — Phase 2.2
+lisa_os.memory_fabric.longterm.store — Phase 2.2 + 2.5 extension
 
-THE single, consolidated long-term memory store. Replaces BOTH:
-  - memory/memory_db.py's MemoryManager (root lisa_memory.db)
-  - memory/long_term.py (data/memory/lisa_memory.db)
+THE single, consolidated long-term memory store.
 
-One DB file: data/memory_fabric/longterm.sqlite
-One schema, category+key unique (adopts long_term.py's better design —
-avoids the root db's global-key collisions).
-
-Adds three fields the old schemas didn't have, matching the fact
-schema in Blueprint Section 3.2.1:
-  - confidence   : how sure we are this fact is current (0.0-1.0)
-  - source       : "extracted" | "explicit" | "migrated" — where it came from
-  - last_confirmed : separate from "created", so we know if a fact is stale
-
-Function names match the OLD long_term.py as closely as possible on
-purpose — most existing call sites just change their import line.
+New in this pass:
+  - fact_history table: every UPDATE/DELETE logs the old value before
+    it's overwritten, with a timestamp + optional reason/quote. This
+    is what lets Lisa answer "who was my roommate before Aniket?"
+    instead of just knowing the current value.
 """
 import sqlite3
 import re
@@ -50,6 +41,17 @@ def _get_conn():
             timestamp TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fact_history (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            category   TEXT NOT NULL,
+            key        TEXT NOT NULL,
+            old_value  TEXT,
+            new_value  TEXT,
+            changed_at TEXT NOT NULL,
+            reason     TEXT
+        )
+    """)
     conn.commit()
     return conn
 
@@ -58,21 +60,26 @@ def _get_conn():
 
 def save_memory(category: str, key: str, value: str,
                  source: str = "extracted", confidence: float = 0.9,
-                 expires_at: str | None = None):
-    """Upsert by (category, key). Keeps original 'created' on update,
-    always bumps 'last_confirmed'.
-
-    General data-integrity guard (not tied to any one caller): rejects
-    empty/None values with a clear Python error instead of letting a
-    raw sqlite NOT NULL crash bubble up from wherever this got called."""
+                 expires_at: str | None = None, reason: str | None = None):
+    """Upsert by (category, key). If a different value already exists,
+    the OLD value is logged to fact_history before being overwritten."""
     if not key or not isinstance(key, str) or not key.strip():
         raise ValueError(f"save_memory: key must be a non-empty string, got {key!r}")
     if not value or not isinstance(value, str) or not value.strip():
         raise ValueError(f"save_memory: value must be a non-empty string, got {value!r} (key={key!r})")
 
     now = datetime.now().isoformat()
-    # ... (baaki function same rahega)
     conn = _get_conn()
+
+    existing = conn.execute(
+        "SELECT value FROM facts WHERE category=? AND key=?", (category, key)
+    ).fetchone()
+    if existing and existing[0] != value:
+        conn.execute(
+            "INSERT INTO fact_history (category, key, old_value, new_value, changed_at, reason) VALUES (?,?,?,?,?,?)",
+            (category, key, existing[0], value, now, reason)
+        )
+
     conn.execute("""
         INSERT INTO facts (category, key, value, confidence, source, created, last_confirmed, expires_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -87,11 +94,32 @@ def save_memory(category: str, key: str, value: str,
     conn.close()
 
 
-def delete_memory(category: str, key: str):
+def delete_memory(category: str, key: str, reason: str | None = None):
+    now = datetime.now().isoformat()
     conn = _get_conn()
+    existing = conn.execute(
+        "SELECT value FROM facts WHERE category=? AND key=?", (category, key)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "INSERT INTO fact_history (category, key, old_value, new_value, changed_at, reason) VALUES (?,?,?,?,?,?)",
+            (category, key, existing[0], None, now, reason)
+        )
     conn.execute("DELETE FROM facts WHERE category=? AND key=?", (category, key))
     conn.commit()
     conn.close()
+
+
+def get_fact_history(category: str, key: str) -> list[dict]:
+    """'Who was my roommate before Aniket?' -> this."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT old_value, new_value, changed_at, reason FROM fact_history "
+        "WHERE category=? AND key=? ORDER BY id DESC",
+        (category, key)
+    ).fetchall()
+    conn.close()
+    return [{"old_value": r[0], "new_value": r[1], "changed_at": r[2], "reason": r[3]} for r in rows]
 
 
 def cleanup_expired():
@@ -148,8 +176,6 @@ def _score_match(query_words: set, key: str, value: str) -> int:
 
 
 def get_relevant_memories(user_query: str, top_k: int = 3) -> str:
-    """Unchanged logic from the old long_term.py (it was good code) —
-    just reads from the unified table now."""
     MAX_CORE_FACTS = 20
 
     rows, sums = _fetch_all()
@@ -215,9 +241,6 @@ def get_full_memories() -> str:
 
 
 def get_all_active_memories() -> list[dict]:
-    """Shape-compatible with the OLD MemoryManager.get_all_active_memories()
-    — so core/agent.py's _get_active_memory_context() needs zero changes
-    beyond the import line."""
     cleanup_expired()
     conn = _get_conn()
     rows = conn.execute("SELECT key, value, category FROM facts").fetchall()
@@ -239,9 +262,6 @@ def list_all() -> list[dict]:
 
 
 def known_keys_by_category() -> dict:
-    """NEW — used by the improved extractor prompt (Phase 2's fix for
-    the duplicate-key problem) so the LLM sees what already exists and
-    updates it instead of inventing 'spouse_name' vs 'wife_name' again."""
     conn = _get_conn()
     rows = conn.execute("SELECT category, key FROM facts").fetchall()
     conn.close()
@@ -261,13 +281,6 @@ def get_recent_sessions(n: int = 3) -> list[dict]:
 
 
 # ── Backward-compat adapter ─────────────────────────────────────────
-# main.py and web_server.py both call `agent.memory_manager.<method>()`
-# directly (not just core/agent.py's own internals) — Phase 1's rule
-# was "old CLI + voice both work unchanged". Rather than edit three
-# files to match three slightly-different old APIs, core/agent.py's
-# self.memory_manager now points at ONE of these instead of the old
-# MemoryManager() class. Same method names, same call shape — nothing
-# else needs to know the storage underneath changed.
 class LegacyMemoryManagerAdapter:
     def get_all_active_memories(self) -> list[dict]:
         return get_all_active_memories()
@@ -277,9 +290,6 @@ class LegacyMemoryManagerAdapter:
         save_memory(category, key, value, source="explicit", expires_at=expires_at)
 
     def delete_memory(self, key: str):
-        """Old callers only ever pass `key` (root db had globally-unique
-        keys). New schema is (category, key) unique, so look up which
-        category(ies) this key lives under and delete all matches."""
         conn = _get_conn()
         rows = conn.execute("SELECT category FROM facts WHERE key=?", (key,)).fetchall()
         conn.close()

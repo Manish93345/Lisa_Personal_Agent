@@ -45,7 +45,7 @@ PROVIDER_PRIORITY = [p.strip() for p in _PRIORITY_ENV.split(",") if p.strip()]
 # Chat models — for conversation quality
 CLOUD_CHAT_MODELS = {
     "gemini":   "gemini-2.5-flash",        # Chat ke liye
-    "groq":     "llama-3.3-70b-versatile", # Groq for Chat Fallback AND Intent
+    "groq":     "openai/gpt-oss-120b", # Groq for Chat Fallback AND Intent
     "claude":   "claude-haiku-4-5-20251001",
 }
 
@@ -129,20 +129,24 @@ def get_response(
             model_type = provider
 
         try:
-            return _call_cloud(
+            result = _call_cloud(
                 model_type, system_prompt, conversation_history,
                 user_message, temperature, max_tokens, api_key=current_key
             )
+            print(f"  [LLM] ✓ served by {provider.upper()} ({model_type})")
+            return result
         except RateLimitError as e:
             print(f"  [LLM] {provider.upper()} rate-limited. Rotating to next key...")
             key_manager.mark_current_exhausted()
             last_err = e
-            time.sleep(1)  # Buffer before next attempt
+            time.sleep(1)
             continue
         except Exception as e:
-            print(f"  [LLM/{provider}] error: {e}")
+            print(f"  [LLM/{provider}] error: {e} — rotating instead of giving up")
+            key_manager.mark_current_exhausted()
             last_err = e
-            break # If it's a non-rate-limit error, break and fallback to local
+            time.sleep(1)
+            continue
 
     print("  [LLM] All cloud providers/keys exhausted — falling back to local Ollama")
     return _ollama(
